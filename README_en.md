@@ -7,7 +7,7 @@
 Make sure the following programs are installed on your computer:
 
 - [Juce](https://juce.com/download/) - a C++ framework for creating audio applications and plugins.
-- [Visual Studio](https://visualstudio.microsoft.com/en/) - a standalone IDE that works on Windows, macOS, and Linux.
+- [Visual Studio](https://visualstudio.microsoft.com) - a standalone IDE that works on Windows, macOS, and Linux.
 - [Git client](https://git-scm.com/) - Git is a free and open-source distributed version control system.
 
 Then
