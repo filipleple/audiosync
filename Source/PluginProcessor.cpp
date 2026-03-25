@@ -9,6 +9,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include <deque>
+#include <memory>
 
 //==============================================================================
 static int delay_frames = 0;
@@ -246,10 +247,21 @@ NewProjectAudioProcessor::NewProjectAudioProcessor()
 
 	//parameter initialized in constructor with these params
 	addParameter(myParameter = new juce::AudioParameterFloat("myParam", "Delay, ms", 0.0f, 4000.0f, 0.0f));
+
+	// === LOGGER INIT ===
+	auto logFile = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+	                   .getChildFile("MyPlugin_Debug.log");
+
+	fileLogger.reset(new juce::FileLogger(logFile, "=== plugin start ===", 0));
+	juce::Logger::setCurrentLogger(fileLogger.get());
+
+	juce::Logger::writeToLog("Processor constructed");
 }
 
 NewProjectAudioProcessor::~NewProjectAudioProcessor()
 {
+	juce::Logger::writeToLog("Processor destroyed");
+	juce::Logger::setCurrentLogger(nullptr);
 }
 
 //==============================================================================
@@ -326,6 +338,8 @@ void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
 {
 	// Use this method as the place to do any pre-playback
 	// initialisation that you need..
+	juce::Logger::writeToLog("prepareToPlay sr=" + juce::String(sampleRate)
+	  + " block=" + juce::String(samplesPerBlock));
 }
 
 void NewProjectAudioProcessor::releaseResources()
@@ -382,6 +396,14 @@ inline void NewProjectAudioProcessor::processTimeCode(const float& sample, tc_da
 void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
 	juce::ScopedNoDenormals noDenormals;
+	static int counter = 0;
+	if ((++counter % 200) == 0)
+	{
+	    juce::Logger::writeToLog(
+	        "processBlock samples=" + juce::String(buffer.getNumSamples()) +
+	        " d_ms=" + juce::String(d_ms) +
+	        " fps=" + juce::String(fps));
+	}
 	auto totalNumInputChannels = getTotalNumInputChannels();
 	auto totalNumOutputChannels = getTotalNumOutputChannels();
 

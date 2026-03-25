@@ -187,4 +187,5 @@ private:
 	tc_data chnl2_in;
 	//==============================================================================
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NewProjectAudioProcessor)
+	std::unique_ptr<juce::FileLogger> fileLogger;
 };
