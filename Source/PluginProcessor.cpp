@@ -210,7 +210,7 @@ inline void handleTimecode(const long double& sample, tc_data& data, const int& 
 					data.syncpos = 0;
 					data.syncstate = 2;
 
-					data.new_time = ((data.hrs * 80 + data.mnts) * 80 + data.scnds) * 100 + data.frms;
+					data.new_time = ((data.hrs * 60 + data.mnts) * 60 + data.scnds) * 100 + data.frms;
 				}
 				else
 				{
@@ -336,8 +336,9 @@ void NewProjectAudioProcessor::changeProgramName(int index, const juce::String& 
 //==============================================================================
 void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
-	// Use this method as the place to do any pre-playback
-	// initialisation that you need..
+	currentSampleRate = sampleRate;
+	juce::Logger::writeToLog("prepareToPlay sr=" + juce::String(sampleRate)
+	    + " block=" + juce::String(samplesPerBlock));
 	juce::Logger::writeToLog("prepareToPlay sr=" + juce::String(sampleRate)
 	  + " block=" + juce::String(samplesPerBlock));
 }
@@ -383,6 +384,17 @@ inline void NewProjectAudioProcessor::processTimeCode(const float& sample, tc_da
 	if (channel.new_time != channel.old_time)
 	{
 		channel.old_time = channel.new_time;
+
+    juce::Logger::writeToLog(
+        "TC decode sr=" + juce::String(srate, 6) +
+        " fpsIndex=" + juce::String(slider) +
+        " syncstate=" + juce::String(channel.syncstate) +
+        " hrs=" + juce::String(channel.hrs) +
+        " min=" + juce::String(channel.mnts) +
+        " sec=" + juce::String(channel.scnds) +
+        " frm=" + juce::String(channel.frms) +
+        " pulse=" + juce::String(channel.pulsesize, 6) +
+        " threshold=" + juce::String((double) channel.threshold, 6));
 
 
 		msg = std::to_string(channel.hrs / 10) + std::to_string(channel.hrs % 10) + ":"
@@ -453,15 +465,14 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
 
 		if (fps == 30) {
-			processTimeCode(write1[i], chnl1_in, input_ch1, i); //for input channel 1
-			processTimeCode(write2[i], chnl2_in, input_ch2, i); // for input channel 2
+		    processTimeCode(write1[i], chnl1_in, input_ch1, i, currentSampleRate, 0);
+		    processTimeCode(write2[i], chnl2_in, input_ch2, i, currentSampleRate, 0);
 		}
-		else if(fps == 25)
+		else if (fps == 25)
 		{
-			processTimeCode(write1[i], chnl1_in, input_ch1, i, 44100, 2); //for input channel 1
-			processTimeCode(write2[i], chnl2_in, input_ch2, i, 44100, 2); // for input channel 2
-
-
+		    processTimeCode(write1[i], chnl1_in, input_ch1, i, currentSampleRate, 2);
+		    processTimeCode(write2[i], chnl2_in, input_ch2, i, currentSampleRate, 2);
+		
 		}
 		d_ms = calc_delay(chnl1_in, chnl2_in, fps);
 
@@ -531,13 +542,13 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			}
 			
 			if (fps == 30) {
-				processTimeCode(write1[i], chnl1, tc, i); //for output channel1 
-				processTimeCode(write2[i], chnl2, output_c2, i); //for output channel 2
+			    processTimeCode(write1[i], chnl1, tc, i, currentSampleRate, 0);
+			    processTimeCode(write2[i], chnl2, output_c2, i, currentSampleRate, 0);
 			}
-			else if(fps == 25)
+			else if (fps == 25)
 			{
-				processTimeCode(write1[i], chnl1, tc, i, 44100, 2); //for output channel1 
-				processTimeCode(write2[i], chnl2, output_c2, i, 44100, 2); //for output channel 2
+			    processTimeCode(write1[i], chnl1, tc, i, currentSampleRate, 2);
+			    processTimeCode(write2[i], chnl2, output_c2, i, currentSampleRate, 2);
 			}
 		}
 		else

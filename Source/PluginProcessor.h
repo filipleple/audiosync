@@ -111,8 +111,8 @@ class NewProjectAudioProcessor : public juce::AudioProcessor
 #endif
 {
 public:
-	
-	std::string tc = "--:--:--:--";
+	double currentSampleRate = 44100.0;
+		std::string tc = "--:--:--:--";
 	std::string output_c2 = "--:--:--:--";
 	std::string delay_ms = "--";
 	std::string input_ch1 = "--:--:--:--";
