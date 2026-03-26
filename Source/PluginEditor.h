@@ -64,7 +64,11 @@ private:
 	juce::ComboBox fps_box;
 	juce::Label fps_label;
 
-
+	// Diagnostic / quality display
+	juce::Label qual_title;
+	juce::Label qual_ch1_label;
+	juce::Label qual_ch2_label;
+	juce::Label qual_sync_label;
 
 	double delay_by_slider = 0;
 

@@ -93,8 +93,15 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
 
 	addAndMakeVisible(fps_box);
 
+	// Diagnostic labels
+	qual_title.setText("--- QUALITY DIAGNOSTICS ---", juce::dontSendNotification);
+	qual_title.setJustificationType(juce::Justification::centred);
+	addAndMakeVisible(qual_title);
+	addAndMakeVisible(qual_ch1_label);
+	addAndMakeVisible(qual_ch2_label);
+	addAndMakeVisible(qual_sync_label);
 
-	setSize(400, 300);
+	setSize(400, 380);
 	startTimer(1);
 }
 
@@ -105,8 +112,8 @@ NewProjectAudioProcessorEditor::~NewProjectAudioProcessorEditor()
 //==============================================================================
 void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
 {
-	//timecode_box.setText(audioProcessor.tc, juce::sendNotificationAsync);
-	//timecode_box_chanel2.setText(audioProcessor.output_c2, juce::sendNotificationAsync);
+	g.setColour(juce::Colours::grey);
+	g.drawHorizontalLine(302, 4.0f, (float)getWidth() - 4.0f);
 }
 
 void NewProjectAudioProcessorEditor::resized()
@@ -200,6 +207,21 @@ void NewProjectAudioProcessorEditor::resized()
 	fps_label.setTopLeftPosition(110, 240);
 	fps_label.moved();
 
+	qual_title.setSize(400, 16);
+	qual_title.setTopLeftPosition(0, 306);
+	qual_title.moved();
+
+	qual_ch1_label.setSize(400, 16);
+	qual_ch1_label.setTopLeftPosition(4, 325);
+	qual_ch1_label.moved();
+
+	qual_ch2_label.setSize(400, 16);
+	qual_ch2_label.setTopLeftPosition(4, 343);
+	qual_ch2_label.moved();
+
+	qual_sync_label.setSize(400, 16);
+	qual_sync_label.setTopLeftPosition(4, 361);
+	qual_sync_label.moved();
 }
 
 void NewProjectAudioProcessorEditor::timerCallback()
@@ -228,6 +250,33 @@ void NewProjectAudioProcessorEditor::timerCallback()
 	delay_box.setText(audioProcessor.delay_ms, juce::dontSendNotification);
 	timecode_input1.setText(audioProcessor.input_ch1, juce::dontSendNotification);
 	timecode_input2.setText(audioProcessor.input_ch2, juce::dontSendNotification);
+
+	// Quality diagnostics
+	const char* stateNames[] = { "FAIL", "SUSPECT", "VALID" };
+	int s1 = std::clamp(audioProcessor.ch1_ltc_state, 0, 2);
+	int s2 = std::clamp(audioProcessor.ch2_ltc_state, 0, 2);
+
+	qual_ch1_label.setText(
+		juce::String("CH1: ") + stateNames[s1] +
+		"  Q=" + juce::String(audioProcessor.ch1_Q_LTC, 2) +
+		"  fps=" + juce::String(audioProcessor.ch1_estimated_fps, 1) +
+		"  Rst=" + juce::String(audioProcessor.ch1_decoder_resets) +
+		"  Rej=" + juce::String(audioProcessor.ch1_rejected_frames),
+		juce::dontSendNotification);
+
+	qual_ch2_label.setText(
+		juce::String("CH2: ") + stateNames[s2] +
+		"  Q=" + juce::String(audioProcessor.ch2_Q_LTC, 2) +
+		"  fps=" + juce::String(audioProcessor.ch2_estimated_fps, 1) +
+		"  Rst=" + juce::String(audioProcessor.ch2_decoder_resets) +
+		"  Rej=" + juce::String(audioProcessor.ch2_rejected_frames),
+		juce::dontSendNotification);
+
+	qual_sync_label.setText(
+		juce::String("dt_dev=") + juce::String(audioProcessor.dt_deviation, 1) + "ms" +
+		"  drift=" + juce::String(audioProcessor.drift_per_s, 2) + "ms/s" +
+		"  Fallback=" + (audioProcessor.fallback_requested ? "YES" : "no"),
+		juce::dontSendNotification);
 
 	repaint();
 }

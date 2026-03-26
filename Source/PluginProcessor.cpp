@@ -16,8 +16,7 @@ static int delay_frames = 0;
 
 inline void delay(float* writePtr, const int& index, tc_data& data)
 {
-
-	if(data.delay_size < data.const_buf.size())
+	if (data.delay_size < data.const_buf.size())
 	{
 		writePtr[index] = data.const_buf[data.const_buf.size() - data.delay_size];
 		return;
@@ -42,21 +41,15 @@ inline double calc_delay(tc_data& data1, tc_data& data2, int fps = 30)
 {
 	int h1 = data1.hrs;
 	int h2 = data2.hrs;
-
 	int m1 = data1.mnts;
 	int m2 = data2.mnts;
-
 	int s1 = data1.scnds;
 	int s2 = data2.scnds;
-
 	int f1 = data1.frms;
 	int f2 = data2.frms;
 
-
 	int time1_in_frames = fps * 3600 * h1 + fps * 60 * m1 + fps * s1 + f1;
 	int time2_in_frames = fps * 3600 * h2 + fps * 60 * m2 + fps * s2 + f2;
-
-	
 
 	if (time1_in_frames == 0 || time2_in_frames == 0)
 	{
@@ -64,12 +57,10 @@ inline double calc_delay(tc_data& data1, tc_data& data2, int fps = 30)
 		return 0;
 	}
 
-
 	const double delay_ms = (time2_in_frames - time1_in_frames) * 1000 / fps;
 
 	if (data1.timecode_counter > 20 || data2.timecode_counter > 20 && std::abs(delay_ms) > 10000)
 	{
-		
 		delay_frames = time2_in_frames - time1_in_frames;
 		return delay_ms;
 	}
@@ -77,12 +68,14 @@ inline double calc_delay(tc_data& data1, tc_data& data2, int fps = 30)
 	if (delay_ms > 10000)
 	{
 		++data2.timecode_counter;
+		++data2.rejected_frames_count;
 		return 0;
 	}
 
 	if (delay_ms < -10000)
 	{
 		++data1.timecode_counter;
+		++data1.rejected_frames_count;
 		return 0;
 	}
 
@@ -97,18 +90,15 @@ inline void handleTimecode(const long double& sample, tc_data& data, const int& 
 {
 	static const double frates[] = {30, 24, 25, 30000.0 / 1001};
 
-
-	//pulsesize is depending of srate and fps
 	data.pulsesize = srate / frates[slider] / 160;
 
-
-	// remove DC offset
+	// Remove DC offset
 	data.otm1 = 0.999 * data.otm1 + sample - data.itm1;
 	data.itm1 = sample;
-
 	const long double s = data.otm1;
 
 	++data.sillen;
+	++data.w_samples_since_trans;
 
 	if (data.sillen > data.pulsesize * 2.2)
 	{
@@ -116,40 +106,51 @@ inline void handleTimecode(const long double& sample, tc_data& data, const int& 
 		data.sillen = 0;
 		data.gotbit = -1;
 		data.syncstate = 1;
+		data.w_samples_since_trans = 0;
 	}
 
 	data.threshold = data.threshold * data.threshenv + std::abs(s) * (1 - data.threshenv);
 	if (data.threshold < data.minthresh)
-	{
 		data.threshold = data.minthresh;
-	}
+
+	// Accumulate envelope for signal_strength
+	data.w_env_sum += (float)data.threshold;
+	++data.w_env_count;
 
 	if ((s < -data.threshold * 0.8 && data.lastsign > 0) || (s > data.threshold * 0.8 && data.lastsign < 0))
 	{
 		data.lastsign *= -1;
+
+		// Transition reliability: inter-transition interval
+		++data.w_trans_total;
+		float interval = (float)data.w_samples_since_trans;
+		if (interval >= data.pulsesize * 0.4f && interval <= data.pulsesize * 2.5f)
+			++data.w_trans_valid;
+		data.w_samples_since_trans = 0;
+
 		++data.gotbit;
 		if (data.sillen > data.pulsesize * 1.8)
 		{
+			// Pulse consistency: sillen at bit commit should be ~2*pulsesize
+			float dev = std::abs((float)data.sillen - 2.0f * data.pulsesize) / (2.0f * data.pulsesize);
+			data.w_pulse_dev_sum += dev;
+			data.w_sillen_sum += (float)data.sillen;
+			++data.w_pulse_dev_count;
+
 			data.gotbit = std::min(data.gotbit, 1);
 			data.sillen = 0;
 
 			data.buf[data.bufpos] = data.gotbit;
-
 			if (++data.bufpos >= 80)
-			{
 				data.bufpos = 0;
-			}
 
 			if (data.syncpos >= 0)
-			{
 				data.syncpos++;
-			}
 
 			if (data.syncpos < 0 || data.syncpos >= 80)
 			{
 				data.syncpos = -1;
 
-				// try to get sync word
 				if (
 					data.buf[(data.bufpos + 64) % 80] == 0 &&
 					data.buf[(data.bufpos + 65) % 80] == 0 &&
@@ -209,8 +210,21 @@ inline void handleTimecode(const long double& sample, tc_data& data, const int& 
 
 					data.syncpos = 0;
 					data.syncstate = 2;
-
 					data.new_time = ((data.hrs * 60 + data.mnts) * 60 + data.scnds) * 100 + data.frms;
+
+					// Quality: lock and sync-word hit counting
+					++data.w_sync_hits;
+					++data.w_frames_decoded;
+
+					// Continuity check: frame should follow prev by +1, or wrap at second boundary
+					if (data.w_prev_frms >= 0)
+					{
+						bool step = (data.frms == data.w_prev_frms + 1);
+						bool wrap = (data.frms == 0 && data.w_prev_frms >= 23);
+						if (step || wrap)
+							++data.w_continuity_ok;
+					}
+					data.w_prev_frms = data.frms;
 				}
 				else
 				{
@@ -220,15 +234,18 @@ inline void handleTimecode(const long double& sample, tc_data& data, const int& 
 			data.gotbit = -1;
 		}
 	}
+
+	// Window boundary: compute metrics and reset accumulators
+	++data.w_sample_count;
+	if (data.w_sample_count >= data.W_SIZE)
+		data.computeAndResetWindow((double)srate, frates[slider]);
 }
 
 inline void handle_const_delay(const float& sample, tc_data& data)
 {
 	data.const_buf.push_back(sample);
-	if (data.const_buf.size() == data.const_buf_size)
-	{
+	if (data.const_buf.size() == (size_t)data.const_buf_size)
 		data.const_buf.pop_front();
-	}
 }
 
 
@@ -244,17 +261,12 @@ NewProjectAudioProcessor::NewProjectAudioProcessor()
 	)
 #endif
 {
-
-	//parameter initialized in constructor with these params
 	addParameter(myParameter = new juce::AudioParameterFloat("myParam", "Delay, ms", 0.0f, 4000.0f, 0.0f));
 
-	// === LOGGER INIT ===
 	auto logFile = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
 	                   .getChildFile("MyPlugin_Debug.log");
-
 	fileLogger.reset(new juce::FileLogger(logFile, "=== plugin start ===", 0));
 	juce::Logger::setCurrentLogger(fileLogger.get());
-
 	juce::Logger::writeToLog("Processor constructed");
 }
 
@@ -272,7 +284,6 @@ const juce::String NewProjectAudioProcessor::getName() const
 
 bool NewProjectAudioProcessor::acceptsMidi() const
 {
-	
 #if JucePlugin_WantsMidiInput
 	return true;
 #else
@@ -282,7 +293,6 @@ bool NewProjectAudioProcessor::acceptsMidi() const
 
 bool NewProjectAudioProcessor::producesMidi() const
 {
-	
 #if JucePlugin_ProducesMidiOutput
 	return true;
 #else
@@ -292,11 +302,6 @@ bool NewProjectAudioProcessor::producesMidi() const
 
 bool NewProjectAudioProcessor::isMidiEffect() const
 {
-
-
-	//return true;
-	
-
 #if JucePlugin_IsMidiEffect
 	return true;
 #else
@@ -311,8 +316,7 @@ double NewProjectAudioProcessor::getTailLengthSeconds() const
 
 int NewProjectAudioProcessor::getNumPrograms()
 {
-	return 1; // NB: some hosts don't cope very well if you tell them there are 0 programs,
-	// so this should be at least 1, even if you're not really implementing programs.
+	return 1;
 }
 
 int NewProjectAudioProcessor::getCurrentProgram()
@@ -339,14 +343,10 @@ void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
 	currentSampleRate = sampleRate;
 	juce::Logger::writeToLog("prepareToPlay sr=" + juce::String(sampleRate)
 	    + " block=" + juce::String(samplesPerBlock));
-	juce::Logger::writeToLog("prepareToPlay sr=" + juce::String(sampleRate)
-	  + " block=" + juce::String(samplesPerBlock));
 }
 
 void NewProjectAudioProcessor::releaseResources()
 {
-	// When playback stops, you can use this as an opportunity to free up any
-	// spare memory, etc.
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -356,15 +356,10 @@ bool NewProjectAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts
 	juce::ignoreUnused(layouts);
 	return true;
 #else
-	// This is the place where you check if the layout is supported.
-	// In this template code we only support mono or stereo.
-	// Some plugin hosts, such as certain GarageBand versions, will only
-	// load plugins that support stereo bus layouts.
 	if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono()
 		&& layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
 		return false;
 
-	// This checks if the input layout matches the output layout
 #if ! JucePlugin_IsSynth
 	if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
 		return false;
@@ -385,17 +380,16 @@ inline void NewProjectAudioProcessor::processTimeCode(const float& sample, tc_da
 	{
 		channel.old_time = channel.new_time;
 
-    juce::Logger::writeToLog(
-        "TC decode sr=" + juce::String(srate, 6) +
-        " fpsIndex=" + juce::String(slider) +
-        " syncstate=" + juce::String(channel.syncstate) +
-        " hrs=" + juce::String(channel.hrs) +
-        " min=" + juce::String(channel.mnts) +
-        " sec=" + juce::String(channel.scnds) +
-        " frm=" + juce::String(channel.frms) +
-        " pulse=" + juce::String(channel.pulsesize, 6) +
-        " threshold=" + juce::String((double) channel.threshold, 6));
-
+		juce::Logger::writeToLog(
+			"TC decode sr=" + juce::String(srate, 6) +
+			" fpsIndex=" + juce::String(slider) +
+			" syncstate=" + juce::String(channel.syncstate) +
+			" hrs=" + juce::String(channel.hrs) +
+			" min=" + juce::String(channel.mnts) +
+			" sec=" + juce::String(channel.scnds) +
+			" frm=" + juce::String(channel.frms) +
+			" pulse=" + juce::String(channel.pulsesize, 6) +
+			" threshold=" + juce::String((double)channel.threshold, 6));
 
 		msg = std::to_string(channel.hrs / 10) + std::to_string(channel.hrs % 10) + ":"
 			+ std::to_string(channel.mnts / 10) + std::to_string(channel.mnts % 10) + ":"
@@ -411,163 +405,180 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 	static int counter = 0;
 	if ((++counter % 200) == 0)
 	{
-	    juce::Logger::writeToLog(
-	        "processBlock samples=" + juce::String(buffer.getNumSamples()) +
-	        " d_ms=" + juce::String(d_ms) +
-	        " fps=" + juce::String(fps));
+		juce::Logger::writeToLog(
+			"processBlock samples=" + juce::String(buffer.getNumSamples()) +
+			" d_ms=" + juce::String(d_ms) +
+			" fps=" + juce::String(fps));
 	}
+
 	auto totalNumInputChannels = getTotalNumInputChannels();
 	auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-	
-	
-
-
-
-
 	for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-	{
 		buffer.clear(i, 0, buffer.getNumSamples());
-	}
 
-	
 	auto* write1 = buffer.getWritePointer(0);
 	auto* write2 = buffer.getWritePointer(1);
 
-	
-	
-	//midilink
-
-
-	//sending out (delay + slider value) as 2 7 bits values via midi link 
-	
-	int value = static_cast<int>(static_cast<float>(((std::abs(d_ms) + by_slider) / 10000) * 16383.0f ));
-	if(value < 0)
-	{
-		value = 0;
-	}
-	int valueMSB = (value >> 7) & 0x7F; // Most Significant 7 bits
-	int valueLSB = value & 0x7F; // Least Significant 7 bits
-
-	//cc 14 bit 6/38
-	midiMessages.addEvent(juce::MidiMessage::controllerEvent(1
-		, 6, valueMSB), 0);
-	midiMessages.addEvent(juce::MidiMessage::controllerEvent(1
-		, 38, valueLSB), 0);
-
-
-	//pitch
+	// MIDI: send (delay + slider) as 14-bit CC and pitch wheel
+	int value = static_cast<int>(static_cast<float>(((std::abs(d_ms) + by_slider) / 10000) * 16383.0f));
+	if (value < 0) value = 0;
+	int valueMSB = (value >> 7) & 0x7F;
+	int valueLSB = value & 0x7F;
+	midiMessages.addEvent(juce::MidiMessage::controllerEvent(1, 6, valueMSB), 0);
+	midiMessages.addEvent(juce::MidiMessage::controllerEvent(1, 38, valueLSB), 0);
 	midiMessages.addEvent(juce::MidiMessage::pitchWheel(1, value), 0);
 
 	for (int i = 0; i < buffer.getNumSamples(); ++i)
 	{
 		handle_const_delay(write1[i], chnl1);
 
-
-		if (fps == 30) {
-		    processTimeCode(write1[i], chnl1_in, input_ch1, i, currentSampleRate, 0);
-		    processTimeCode(write2[i], chnl2_in, input_ch2, i, currentSampleRate, 0);
+		if (fps == 30)
+		{
+			processTimeCode(write1[i], chnl1_in, input_ch1, i, currentSampleRate, 0);
+			processTimeCode(write2[i], chnl2_in, input_ch2, i, currentSampleRate, 0);
 		}
 		else if (fps == 25)
 		{
-		    processTimeCode(write1[i], chnl1_in, input_ch1, i, currentSampleRate, 2);
-		    processTimeCode(write2[i], chnl2_in, input_ch2, i, currentSampleRate, 2);
-		
+			processTimeCode(write1[i], chnl1_in, input_ch1, i, currentSampleRate, 2);
+			processTimeCode(write2[i], chnl2_in, input_ch2, i, currentSampleRate, 2);
 		}
+
 		d_ms = calc_delay(chnl1_in, chnl2_in, fps);
 
 		if (std::abs(prev_frames - delay_frames) > 1)
 		{
-			
 			chnl1.clear();
 			chnl2.clear();
 		}
-		else if(std::abs(prev_frames - delay_frames) == 1)
+		else if (std::abs(prev_frames - delay_frames) == 1)
 		{
-				if (d_ms > prev_ms)
-				{
-					d_ms = prev_ms;
-					delay_frames = prev_frames;
-				}
+			if (d_ms > prev_ms)
+			{
+				d_ms = prev_ms;
+				delay_frames = prev_frames;
+			}
 		}
-
 
 		delay_ms = std::to_string(std::abs(delay_frames));
 		o_delay_ms = std::to_string(std::abs(d_ms));
 
-
-		//we sent info via midi modulation(we sent delay + slider value)
 		myParameter->setValueNotifyingHost(static_cast<float>((std::abs(d_ms) + std::floor(by_slider)) / 4000));
-
 
 		if (active_delay)
 		{
-			
-
-			
-
-
-			if (d_ms > 0 && !chnl1.active_delay && !chnl2.active_delay) // if channel 2 is faster than channel 1
+			if (d_ms > 0 && !chnl1.active_delay && !chnl2.active_delay)
 			{
 				chnl2.active_delay = true;
 				chnl1.active_delay = false;
 			}
-			if (d_ms < 0 && !chnl1.active_delay && !chnl2.active_delay) // if channel 1 is faster than channel 2
+			if (d_ms < 0 && !chnl1.active_delay && !chnl2.active_delay)
 			{
 				chnl2.active_delay = false;
 				chnl1.active_delay = true;
 			}
 
-
-			if (chnl2.active_delay) //delay for channel 2
+			if (chnl2.active_delay)
 			{
 				if (chnl2.delay_size == 0)
-				{
 					chnl2.delay_size = std::floor(d_ms / 1000 * 44100);
-				}
-
 				delay(write2, i, chnl2);
 			}
-			if (chnl1.active_delay) //delay for channel 1
+			if (chnl1.active_delay)
 			{
 				if (!chnl1.delay_size)
-				{
 					chnl1.delay_size = std::floor(std::abs(d_ms) / 1000 * 44100);
-				}
-				
-				
 				delay(write1, i, chnl1);
-				
-				
 			}
-			
-			if (fps == 30) {
-			    processTimeCode(write1[i], chnl1, tc, i, currentSampleRate, 0);
-			    processTimeCode(write2[i], chnl2, output_c2, i, currentSampleRate, 0);
+
+			if (fps == 30)
+			{
+				processTimeCode(write1[i], chnl1, tc, i, currentSampleRate, 0);
+				processTimeCode(write2[i], chnl2, output_c2, i, currentSampleRate, 0);
 			}
 			else if (fps == 25)
 			{
-			    processTimeCode(write1[i], chnl1, tc, i, currentSampleRate, 2);
-			    processTimeCode(write2[i], chnl2, output_c2, i, currentSampleRate, 2);
+				processTimeCode(write1[i], chnl1, tc, i, currentSampleRate, 2);
+				processTimeCode(write2[i], chnl2, output_c2, i, currentSampleRate, 2);
 			}
 		}
 		else
 		{
 			tc = input_ch1;
 			output_c2 = input_ch2;
-
 			chnl1.clear();
 			chnl2.clear();
 		}
+
 		prev_ms = d_ms;
 		prev_frames = delay_frames;
+
+		// Update diagnostic outputs every ~0.1s (4410 samples at 44100 Hz)
+		if (++dt_sample_counter >= 4410)
+		{
+			dt_sample_counter = 0;
+
+			// Copy per-channel metrics from input decoders
+			ch1_Q_LTC           = chnl1_in.Q_LTC;
+			ch2_Q_LTC           = chnl2_in.Q_LTC;
+			ch1_ltc_state       = (int)chnl1_in.ltc_state;
+			ch2_ltc_state       = (int)chnl2_in.ltc_state;
+			ch1_estimated_fps   = chnl1_in.estimated_fps;
+			ch2_estimated_fps   = chnl2_in.estimated_fps;
+			ch1_decoder_resets  = chnl1_in.decoder_reset_count;
+			ch2_decoder_resets  = chnl2_in.decoder_reset_count;
+			ch1_rejected_frames = chnl1_in.rejected_frames_count;
+			ch2_rejected_frames = chnl2_in.rejected_frames_count;
+
+			// Accumulate Δt history (skip zero — no valid measurement yet)
+			if (d_ms != 0.0)
+			{
+				dt_history.push_back(d_ms);
+				if ((int)dt_history.size() > 20)
+					dt_history.pop_front();
+			}
+
+			// Channel agreement: std deviation of Δt in window
+			if (dt_history.size() >= 2)
+			{
+				double mean = 0.0;
+				for (double v : dt_history) mean += v;
+				mean /= (double)dt_history.size();
+				double variance = 0.0;
+				for (double v : dt_history) { double d = v - mean; variance += d * d; }
+				dt_deviation = std::sqrt(variance / (double)dt_history.size());
+			}
+
+			// Drift suspicion: linear regression slope of Δt over time
+			if (dt_history.size() >= 3)
+			{
+				int n = (int)dt_history.size();
+				double sx = 0, sy = 0, sxy = 0, sxx = 0;
+				for (int j = 0; j < n; ++j)
+				{
+					sx  += j;
+					sy  += dt_history[j];
+					sxy += j * dt_history[j];
+					sxx += (double)j * j;
+				}
+				double denom = n * sxx - sx * sx;
+				if (std::abs(denom) > 1e-9)
+				{
+					// slope in ms per 0.1s interval → convert to ms/s
+					drift_per_s = (n * sxy - sx * sy) / denom * 10.0;
+					drift_suspected = std::abs(drift_per_s) > 2.0;
+				}
+			}
+
+			fallback_requested = (chnl1_in.fallback_requested || chnl2_in.fallback_requested || drift_suspected);
+		}
 	}
 }
 
 //==============================================================================
 bool NewProjectAudioProcessor::hasEditor() const
 {
-	return true; // (change this to false if you choose to not supply an editor)
+	return true;
 }
 
 juce::AudioProcessorEditor* NewProjectAudioProcessor::createEditor()
@@ -578,19 +589,13 @@ juce::AudioProcessorEditor* NewProjectAudioProcessor::createEditor()
 //==============================================================================
 void NewProjectAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
-	// You should use this method to store your parameters in the memory block.
-	// You could do that either as raw data, or use the XML or ValueTree classes
-	// as intermediaries to make it easy to save and load complex data.
 }
 
 void NewProjectAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
-	// You should use this method to restore your parameters from this memory block,
-	// whose contents will have been created by the getStateInformation() call.
 }
 
 //==============================================================================
-// This creates new instances of the plugin..
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
 	return new NewProjectAudioProcessor();
