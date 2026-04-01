@@ -100,8 +100,9 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
 	addAndMakeVisible(qual_ch1_label);
 	addAndMakeVisible(qual_ch2_label);
 	addAndMakeVisible(qual_sync_label);
+	addAndMakeVisible(qual_fallback_label);
 
-	setSize(400, 380);
+	setSize(400, 400);
 	startTimer(1);
 }
 
@@ -222,6 +223,10 @@ void NewProjectAudioProcessorEditor::resized()
 	qual_sync_label.setSize(400, 16);
 	qual_sync_label.setTopLeftPosition(4, 361);
 	qual_sync_label.moved();
+
+	qual_fallback_label.setSize(400, 16);
+	qual_fallback_label.setTopLeftPosition(4, 379);
+	qual_fallback_label.moved();
 }
 
 void NewProjectAudioProcessorEditor::timerCallback()
@@ -277,6 +282,19 @@ void NewProjectAudioProcessorEditor::timerCallback()
 		"  drift=" + juce::String(audioProcessor.drift_per_s, 2) + "ms/s" +
 		"  Fallback=" + (audioProcessor.fallback_requested ? "YES" : "no"),
 		juce::dontSendNotification);
+
+	{
+		const char* srcNames[] = { "NONE", "LTC", "AUD" };
+		int src = std::clamp(audioProcessor.aud_fusionSource, 0, 2);
+		juce::String dtStr = (audioProcessor.aud_fusionSource > 0 || audioProcessor.aud_conf > 0.01)
+			? juce::String(audioProcessor.aud_deltaMs, 0) + "ms"
+			: "---";
+		qual_fallback_label.setText(
+			juce::String("AUD: dt=") + dtStr +
+			"  conf=" + juce::String(audioProcessor.aud_conf, 2) +
+			"  src=" + srcNames[src],
+			juce::dontSendNotification);
+	}
 
 	repaint();
 }

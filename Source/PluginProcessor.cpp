@@ -341,6 +341,7 @@ void NewProjectAudioProcessor::changeProgramName(int index, const juce::String& 
 void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
 	currentSampleRate = sampleRate;
+	audFallback.init(sampleRate);
 	juce::Logger::writeToLog("prepareToPlay sr=" + juce::String(sampleRate)
 	    + " block=" + juce::String(samplesPerBlock));
 }
@@ -399,6 +400,164 @@ inline void NewProjectAudioProcessor::processTimeCode(const float& sample, tc_da
 }
 #endif
 
+void NewProjectAudioProcessor::pushAudioAnalysisSample(float ch1, float ch2)
+{
+	if (audFallback.novelty1.empty())
+		return;
+
+	audFallback.energyAcc1 += ch1 * ch1;
+	audFallback.energyAcc2 += ch2 * ch2;
+
+	if (++audFallback.hopSampleCounter < audFallback.hopSamples)
+		return;
+
+	// Hop boundary: compute novelty = positive energy increase
+	float e1 = audFallback.energyAcc1 / (float)audFallback.hopSamples;
+	float e2 = audFallback.energyAcc2 / (float)audFallback.hopSamples;
+
+	float nov1 = std::max(0.0f, e1 - audFallback.prevEnergy1);
+	float nov2 = std::max(0.0f, e2 - audFallback.prevEnergy2);
+
+	audFallback.prevEnergy1      = e1;
+	audFallback.prevEnergy2      = e2;
+	audFallback.energyAcc1       = 0.0f;
+	audFallback.energyAcc2       = 0.0f;
+	audFallback.hopSampleCounter = 0;
+
+	audFallback.novelty1[audFallback.writePos] = nov1;
+	audFallback.novelty2[audFallback.writePos] = nov2;
+	audFallback.writePos = (audFallback.writePos + 1) % audFallback.windowFrames;
+	if (audFallback.framesFilled < audFallback.windowFrames)
+		++audFallback.framesFilled;
+
+	if (++audFallback.hopsSinceRefresh >= audFallback.refreshEvery)
+	{
+		audFallback.hopsSinceRefresh = 0;
+		estimateAudioFallbackOffset();
+		fuseLtcAndAudioFallback();
+	}
+}
+
+void NewProjectAudioProcessor::estimateAudioFallbackOffset()
+{
+	if (audFallback.framesFilled < audFallback.windowFrames)
+		return;
+
+	const int N = audFallback.windowFrames;
+	const int L = audFallback.lagRange;
+
+	// Linearise circular buffers into pre-allocated scratch
+	for (int i = 0; i < N; ++i)
+	{
+		int src = (audFallback.writePos + i) % N;
+		audFallback.linBuf1[i] = audFallback.novelty1[src];
+		audFallback.linBuf2[i] = audFallback.novelty2[src];
+	}
+
+	// Means
+	float m1 = 0.0f, m2 = 0.0f;
+	for (int i = 0; i < N; ++i) { m1 += audFallback.linBuf1[i]; m2 += audFallback.linBuf2[i]; }
+	m1 /= (float)N;
+	m2 /= (float)N;
+
+	// Std devs
+	float s1 = 0.0f, s2 = 0.0f;
+	for (int i = 0; i < N; ++i)
+	{
+		float d1 = audFallback.linBuf1[i] - m1;
+		float d2 = audFallback.linBuf2[i] - m2;
+		s1 += d1 * d1;
+		s2 += d2 * d2;
+	}
+	s1 = std::sqrt(s1 / (float)N);
+	s2 = std::sqrt(s2 / (float)N);
+
+	if (s1 < 1e-6f || s2 < 1e-6f)
+	{
+		audFallback.valid      = false;
+		audFallback.stableCount = 0;
+		return;
+	}
+
+	double bestCorr   = -2.0;
+	double secondBest = -2.0;
+	int    bestLag    = 0;
+
+	for (int lag = -L; lag <= L; ++lag)
+	{
+		double sum = 0.0;
+		int    cnt = 0;
+		for (int i = 0; i < N; ++i)
+		{
+			int j = i + lag;
+			if (j >= 0 && j < N)
+			{
+				sum += (double)(audFallback.linBuf1[i] - m1) * (double)(audFallback.linBuf2[j] - m2);
+				++cnt;
+			}
+		}
+		double corr = cnt > 0 ? sum / ((double)cnt * (double)s1 * (double)s2) : 0.0;
+		if (corr > bestCorr)
+		{
+			secondBest = bestCorr;
+			bestCorr   = corr;
+			bestLag    = lag;
+		}
+		else if (corr > secondBest)
+		{
+			secondBest = corr;
+		}
+	}
+
+	double prominence = (bestCorr > 0.0)
+		? std::min(1.0, (bestCorr - std::max(0.0, secondBest)) / (bestCorr + 1e-9))
+		: 0.0;
+
+	bool stable = (audFallback.prevBestLag != INT_MAX &&
+	               std::abs(bestLag - audFallback.prevBestLag) <= 2);
+	if (stable) ++audFallback.stableCount;
+	else         audFallback.stableCount = 0;
+
+	double stability = std::min(1.0, audFallback.stableCount / 3.0);
+
+	audFallback.confAud     = std::max(0.0, std::min(1.0, 0.6 * prominence + 0.4 * stability));
+	audFallback.deltaAudMs  = (double)bestLag * audFallback.hopMs;
+	audFallback.bestLag     = bestLag;
+	audFallback.peakCorr    = bestCorr;
+	audFallback.secondPeak  = secondBest;
+	audFallback.prevBestLag = bestLag;
+	audFallback.valid       = (audFallback.stableCount >= 3 && audFallback.confAud > 0.3);
+}
+
+void NewProjectAudioProcessor::fuseLtcAndAudioFallback()
+{
+	bool ltcOk = (chnl1_in.ltc_state == tc_data::LTCState::VALID &&
+	              chnl2_in.ltc_state == tc_data::LTCState::VALID &&
+	              !drift_suspected);
+
+	if (ltcOk)
+	{
+		fusion.source         = FusionState::Source::LTC;
+		fusion.selectedMs     = d_ms;
+		fusion.selectedConf   = (double)std::min(chnl1_in.Q_LTC, chnl2_in.Q_LTC);
+		fusion.fallbackActive = false;
+	}
+	else if (audFallback.valid && audFallback.confAud > 0.4)
+	{
+		fusion.source         = FusionState::Source::AudioFallback;
+		fusion.selectedMs     = audFallback.deltaAudMs;
+		fusion.selectedConf   = audFallback.confAud;
+		fusion.fallbackActive = true;
+	}
+	else
+	{
+		fusion.source         = FusionState::Source::None;
+		fusion.selectedMs     = 0.0;
+		fusion.selectedConf   = 0.0;
+		fusion.fallbackActive = false;
+	}
+}
+
 void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
 	juce::ScopedNoDenormals noDenormals;
@@ -444,6 +603,9 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			processTimeCode(write2[i], chnl2_in, input_ch2, i, currentSampleRate, 2);
 		}
 
+		// Audio fallback: read raw input before delay() modifies write pointers
+		pushAudioAnalysisSample(write1[i], write2[i]);
+
 		d_ms = calc_delay(chnl1_in, chnl2_in, fps);
 
 		if (std::abs(prev_frames - delay_frames) > 1)
@@ -481,13 +643,13 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			if (chnl2.active_delay)
 			{
 				if (chnl2.delay_size == 0)
-					chnl2.delay_size = std::floor(d_ms / 1000 * 44100);
+					chnl2.delay_size = std::floor(d_ms / 1000.0 * currentSampleRate);
 				delay(write2, i, chnl2);
 			}
 			if (chnl1.active_delay)
 			{
 				if (!chnl1.delay_size)
-					chnl1.delay_size = std::floor(std::abs(d_ms) / 1000 * 44100);
+					chnl1.delay_size = std::floor(std::abs(d_ms) / 1000.0 * currentSampleRate);
 				delay(write1, i, chnl1);
 			}
 
@@ -513,8 +675,8 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 		prev_ms = d_ms;
 		prev_frames = delay_frames;
 
-		// Update diagnostic outputs every ~0.1s (4410 samples at 44100 Hz)
-		if (++dt_sample_counter >= 4410)
+		// Update diagnostic outputs every ~0.1s
+		if (++dt_sample_counter >= (int)(currentSampleRate * 0.1))
 		{
 			dt_sample_counter = 0;
 
@@ -571,6 +733,11 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			}
 
 			fallback_requested = (chnl1_in.fallback_requested || chnl2_in.fallback_requested || drift_suspected);
+
+			// Audio fallback + fusion snapshot
+			aud_deltaMs      = audFallback.deltaAudMs;
+			aud_conf         = audFallback.confAud;
+			aud_fusionSource = (int)fusion.source;
 		}
 	}
 }

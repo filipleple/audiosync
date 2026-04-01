@@ -11,6 +11,8 @@
 #include <JuceHeader.h>
 #include <math.h>
 #include <deque>
+#include <array>
+#include <climits>
 
 //==============================================================================
 
@@ -22,7 +24,7 @@ public:
 	int scnds = 0;
 	int frms = 0;
 
-	int* buf = new int[80]{0};
+	std::array<int, 80> buf{};
 
 	const long double threshenv = std::pow(2.7182818284, (-1 / (0.1 * 44100)));
 
@@ -216,6 +218,82 @@ public:
 	}
 };
 
+// ============================================================================
+// Audio-domain fallback estimator state
+// ============================================================================
+
+struct AudioFallbackState
+{
+	// Parameters - set by init(), derived from sample rate
+	int    hopSamples   = 441;
+	int    windowFrames = 200;
+	int    lagRange     = 150;
+	int    refreshEvery = 20;
+	double hopMs        = 10.0;
+
+	// Per-hop energy accumulators
+	float energyAcc1       = 0.0f;
+	float energyAcc2       = 0.0f;
+	float prevEnergy1      = 0.0f;
+	float prevEnergy2      = 0.0f;
+	int   hopSampleCounter = 0;
+	int   hopsSinceRefresh = 0;
+
+	// Novelty circular buffers + pre-allocated linearisation scratch
+	std::vector<float> novelty1;
+	std::vector<float> novelty2;
+	std::vector<float> linBuf1;
+	std::vector<float> linBuf2;
+	int writePos     = 0;
+	int framesFilled = 0;
+
+	// Estimation results
+	double deltaAudMs  = 0.0;
+	double confAud     = 0.0;
+	double peakCorr    = 0.0;
+	double secondPeak  = 0.0;
+	int    bestLag     = 0;
+	int    prevBestLag = INT_MAX;
+	int    stableCount = 0;
+	bool   valid       = false;
+
+	void init(double sampleRate)
+	{
+		hopMs        = 10.0;
+		hopSamples   = (int)std::round(sampleRate * 0.010);
+		windowFrames = 200;
+		lagRange     = 150;
+		refreshEvery = 20;
+		novelty1.assign(windowFrames, 0.0f);
+		novelty2.assign(windowFrames, 0.0f);
+		linBuf1.assign(windowFrames, 0.0f);
+		linBuf2.assign(windowFrames, 0.0f);
+		reset();
+	}
+
+	void reset()
+	{
+		energyAcc1 = energyAcc2 = prevEnergy1 = prevEnergy2 = 0.0f;
+		hopSampleCounter = hopsSinceRefresh = writePos = framesFilled = 0;
+		deltaAudMs = confAud = peakCorr = secondPeak = 0.0;
+		bestLag = 0;
+		prevBestLag = INT_MAX;
+		stableCount = 0;
+		valid = false;
+	}
+};
+
+struct FusionState
+{
+	enum class Source { None, LTC, AudioFallback };
+	Source source         = Source::None;
+	double selectedMs     = 0.0;
+	double selectedConf   = 0.0;
+	bool   fallbackActive = false;
+};
+
+// ============================================================================
+
 class NewProjectAudioProcessor : public juce::AudioProcessor
 #if JucePlugin_Enable_ARA
                              , public juce::AudioProcessorARAExtension
@@ -257,6 +335,11 @@ public:
 	double drift_per_s = 0.0;
 	bool drift_suspected = false;
 	bool fallback_requested = false;
+
+	// Audio fallback + fusion diagnostic outputs
+	double aud_deltaMs      = 0.0;
+	double aud_conf         = 0.0;
+	int    aud_fusionSource = 0;   // 0=None, 1=LTC, 2=AudioFallback
 
 public:
 	//==============================================================================
@@ -300,6 +383,10 @@ private:
 	inline void processTimeCode(const float& sample, tc_data& channel, std::string& msg,
 		const int& index, const float& sr, const int& sl);
 
+	void pushAudioAnalysisSample(float ch1, float ch2);
+	void estimateAudioFallbackOffset();
+	void fuseLtcAndAudioFallback();
+
 private:
 	tc_data chnl1;
 	tc_data chnl2;
@@ -309,6 +396,9 @@ private:
 	// Δt rolling window for drift / channel_agreement detection
 	std::deque<double> dt_history;
 	int dt_sample_counter = 0;
+
+	AudioFallbackState audFallback;
+	FusionState        fusion;
 
 	//==============================================================================
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NewProjectAudioProcessor)

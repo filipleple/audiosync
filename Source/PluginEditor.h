@@ -69,6 +69,7 @@ private:
 	juce::Label qual_ch1_label;
 	juce::Label qual_ch2_label;
 	juce::Label qual_sync_label;
+	juce::Label qual_fallback_label;
 
 	double delay_by_slider = 0;
 
