@@ -286,13 +286,17 @@ void NewProjectAudioProcessorEditor::timerCallback()
 	{
 		const char* srcNames[] = { "NONE", "LTC", "AUD" };
 		int src = std::clamp(audioProcessor.aud_fusionSource, 0, 2);
-		juce::String dtStr = (audioProcessor.aud_fusionSource > 0 || audioProcessor.aud_conf > 0.01)
+		juce::String dtStr = audioProcessor.aud_conf > 0.01
 			? juce::String(audioProcessor.aud_deltaMs, 0) + "ms"
 			: "---";
+		juce::String activeStr = audioProcessor.aud_activeDelayMs != 0.0
+			? juce::String((int)std::round(audioProcessor.aud_activeDelayMs)) + "ms"
+			: "off";
 		qual_fallback_label.setText(
 			juce::String("AUD: dt=") + dtStr +
 			"  conf=" + juce::String(audioProcessor.aud_conf, 2) +
-			"  src=" + srcNames[src],
+			"  src=" + srcNames[src] +
+			"  applied=" + activeStr,
 			juce::dontSendNotification);
 	}
 

@@ -337,9 +337,10 @@ public:
 	bool fallback_requested = false;
 
 	// Audio fallback + fusion diagnostic outputs
-	double aud_deltaMs      = 0.0;
-	double aud_conf         = 0.0;
-	int    aud_fusionSource = 0;   // 0=None, 1=LTC, 2=AudioFallback
+	double aud_deltaMs        = 0.0;
+	double aud_conf           = 0.0;
+	int    aud_fusionSource   = 0;    // 0=None, 1=LTC, 2=AudioFallback
+	double aud_activeDelayMs  = 0.0;  // offset actually programmed into delay engine
 
 public:
 	//==============================================================================
@@ -396,9 +397,11 @@ private:
 	// Δt rolling window for drift / channel_agreement detection
 	std::deque<double> dt_history;
 	int dt_sample_counter = 0;
+	int drift_confirm_count = 0;   // consecutive windows where |drift_per_s| > threshold
 
 	AudioFallbackState audFallback;
 	FusionState        fusion;
+	double activeDelayMs = 0.0;  // offset currently programmed into the delay engine
 
 	//==============================================================================
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NewProjectAudioProcessor)

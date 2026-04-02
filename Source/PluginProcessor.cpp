@@ -521,7 +521,9 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 	double stability = std::min(1.0, audFallback.stableCount / 3.0);
 
 	audFallback.confAud     = std::max(0.0, std::min(1.0, 0.6 * prominence + 0.4 * stability));
-	audFallback.deltaAudMs  = (double)bestLag * audFallback.hopMs;
+	// Negate: bestLag < 0 means novelty2 leads novelty1, i.e. CH2 is ahead.
+	// LTC convention: d_ms > 0 when CH2 is ahead of CH1. Match that.
+	audFallback.deltaAudMs  = -(double)bestLag * audFallback.hopMs;
 	audFallback.bestLag     = bestLag;
 	audFallback.peakCorr    = bestCorr;
 	audFallback.secondPeak  = secondBest;
@@ -608,10 +610,12 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
 		d_ms = calc_delay(chnl1_in, chnl2_in, fps);
 
+		// LTC jump detection: large jump resets delay state
 		if (std::abs(prev_frames - delay_frames) > 1)
 		{
 			chnl1.clear();
 			chnl2.clear();
+			activeDelayMs = 0.0;
 		}
 		else if (std::abs(prev_frames - delay_frames) == 1)
 		{
@@ -622,19 +626,44 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			}
 		}
 
-		delay_ms = std::to_string(std::abs(delay_frames));
-		o_delay_ms = std::to_string(std::abs(d_ms));
+		// Determine target offset from fusion:
+		//   LTC source         -> use live d_ms (always fresh)
+		//   AudioFallback      -> use fusion estimate (updated every ~200ms)
+		//   None (abstain)     -> hold activeDelayMs to avoid zeroing delay;
+		//                         if delay was never set, fall through to d_ms
+		double targetMs;
+		if (fusion.source == FusionState::Source::LTC)
+			targetMs = d_ms;
+		else if (fusion.source == FusionState::Source::AudioFallback)
+			targetMs = fusion.selectedMs;
+		else if (activeDelayMs != 0.0)
+			targetMs = activeDelayMs;
+		else
+			targetMs = d_ms;
 
-		myParameter->setValueNotifyingHost(static_cast<float>((std::abs(d_ms) + std::floor(by_slider)) / 4000));
+		// Rebuild delay engine if fusion target has shifted by more than 2 frames
+		const double rebuildThreshMs = 2000.0 / fps;
+		if (active_delay && activeDelayMs != 0.0 && targetMs != 0.0 &&
+		    std::abs(targetMs - activeDelayMs) > rebuildThreshMs)
+		{
+			chnl1.clear();
+			chnl2.clear();
+			activeDelayMs = 0.0;
+		}
+
+		delay_ms = std::to_string(std::abs(delay_frames));
+		o_delay_ms = std::to_string((int)std::round(std::abs(targetMs)));
+
+		myParameter->setValueNotifyingHost(static_cast<float>((std::abs(targetMs) + std::floor(by_slider)) / 4000));
 
 		if (active_delay)
 		{
-			if (d_ms > 0 && !chnl1.active_delay && !chnl2.active_delay)
+			if (targetMs > 0 && !chnl1.active_delay && !chnl2.active_delay)
 			{
 				chnl2.active_delay = true;
 				chnl1.active_delay = false;
 			}
-			if (d_ms < 0 && !chnl1.active_delay && !chnl2.active_delay)
+			if (targetMs < 0 && !chnl1.active_delay && !chnl2.active_delay)
 			{
 				chnl2.active_delay = false;
 				chnl1.active_delay = true;
@@ -643,13 +672,19 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			if (chnl2.active_delay)
 			{
 				if (chnl2.delay_size == 0)
-					chnl2.delay_size = std::floor(d_ms / 1000.0 * currentSampleRate);
+				{
+					chnl2.delay_size = (size_t)std::floor(std::abs(targetMs) / 1000.0 * currentSampleRate);
+					activeDelayMs = targetMs;
+				}
 				delay(write2, i, chnl2);
 			}
 			if (chnl1.active_delay)
 			{
 				if (!chnl1.delay_size)
-					chnl1.delay_size = std::floor(std::abs(d_ms) / 1000.0 * currentSampleRate);
+				{
+					chnl1.delay_size = (size_t)std::floor(std::abs(targetMs) / 1000.0 * currentSampleRate);
+					activeDelayMs = targetMs;
+				}
 				delay(write1, i, chnl1);
 			}
 
@@ -670,6 +705,7 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			output_c2 = input_ch2;
 			chnl1.clear();
 			chnl2.clear();
+			activeDelayMs = 0.0;
 		}
 
 		prev_ms = d_ms;
@@ -728,16 +764,25 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 				{
 					// slope in ms per 0.1s interval → convert to ms/s
 					drift_per_s = (n * sxy - sx * sy) / denom * 10.0;
-					drift_suspected = std::abs(drift_per_s) > 2.0;
+
+					// Require 3 consecutive windows above threshold before flagging.
+					// Occasional decode errors at SNR ~20 dB can produce spikes
+					// above 2 ms/s without any real drift present.
+					if (std::abs(drift_per_s) > 5.0)
+						++drift_confirm_count;
+					else
+						drift_confirm_count = 0;
+					drift_suspected = (drift_confirm_count >= 3);
 				}
 			}
 
 			fallback_requested = (chnl1_in.fallback_requested || chnl2_in.fallback_requested || drift_suspected);
 
 			// Audio fallback + fusion snapshot
-			aud_deltaMs      = audFallback.deltaAudMs;
-			aud_conf         = audFallback.confAud;
-			aud_fusionSource = (int)fusion.source;
+			aud_deltaMs       = audFallback.deltaAudMs;
+			aud_conf          = audFallback.confAud;
+			aud_fusionSource  = (int)fusion.source;
+			aud_activeDelayMs = activeDelayMs;
 		}
 	}
 }
