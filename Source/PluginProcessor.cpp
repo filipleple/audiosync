@@ -606,10 +606,16 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 {
 	juce::ScopedNoDenormals noDenormals;
 
-	// Snapshot the running sample counter BEFORE incrementing it.
-	// Both master and slave call prepareToPlay at session start so their
-	// counters start from the same origin, keeping positions comparable.
-	const int64_t bufferStartSample = totalSamplesProcessed;
+	// Absolute DAW timeline position of the first sample in this buffer.
+	// Using the playhead ensures all instances share the same origin regardless
+	// of when their prepareToPlay was called (e.g. slave added mid-session).
+	// Falls back to the self-maintained counter when no playhead is available
+	// (standalone mode, some hosts).
+	int64_t bufferStartSample = totalSamplesProcessed;
+	if (auto* ph = getPlayHead())
+		if (auto pos = ph->getPosition())
+			if (auto ts = pos->getTimeInSamples())
+				bufferStartSample = *ts;
 	totalSamplesProcessed += buffer.getNumSamples();
 
 	static int counter = 0;
