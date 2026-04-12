@@ -662,7 +662,9 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 	}
 
 	// =========================================================================
-	// SLAVE PATH (existing stereo logic — untouched until Step 5)
+	// SLAVE PATH
+	// Decode own LTC from ltcChannel, read master SM for reference offset,
+	// apply delay.  Audio fallback NCC wired up in Step 6.
 	// =========================================================================
 
 	// MIDI: send (delay + slider) as 14-bit CC and pitch wheel
@@ -674,58 +676,31 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 	midiMessages.addEvent(juce::MidiMessage::controllerEvent(1, 38, valueLSB), 0);
 	midiMessages.addEvent(juce::MidiMessage::pitchWheel(1, value), 0);
 
+	const int fpsIndex = (fps == 25) ? 2 : 0;
+
 	for (int i = 0; i < buffer.getNumSamples(); ++i)
 	{
 		handle_const_delay(write1[i], chnl1);
 
-		if (fps == 30)
-		{
-			processTimeCode(write1[i], chnl1_in, input_ch1, i, currentSampleRate, 0);
-			processTimeCode(write2[i], chnl2_in, input_ch2, i, currentSampleRate, 0);
-		}
-		else if (fps == 25)
-		{
-			processTimeCode(write1[i], chnl1_in, input_ch1, i, currentSampleRate, 2);
-			processTimeCode(write2[i], chnl2_in, input_ch2, i, currentSampleRate, 2);
-		}
+		// Decode own LTC from the configured channel only
+		float ltcSample = (ltcChannel == 0) ? write1[i] : write2[i];
+		processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex);
 
-		// Audio fallback: read raw input before delay() modifies write pointers
+		// Both channels fed to novelty extractor for Step 6 audio fallback NCC
 		pushAudioAnalysisSample(write1[i], write2[i]);
 
-		d_ms = calc_delay(chnl1_in, chnl2_in, fps);
-
-		// LTC jump detection: large jump resets delay state
-		if (std::abs(prev_frames - delay_frames) > 1)
-		{
-			chnl1.clear();
-			chnl2.clear();
-			activeDelayMs = 0.0;
-		}
-		else if (std::abs(prev_frames - delay_frames) == 1)
-		{
-			if (d_ms > prev_ms)
-			{
-				d_ms = prev_ms;
-				delay_frames = prev_frames;
-			}
-		}
-
-		// Determine target offset from fusion:
-		//   LTC source         -> use live d_ms (always fresh)
-		//   AudioFallback      -> use fusion estimate (updated every ~200ms)
-		//   None (abstain)     -> hold activeDelayMs to avoid zeroing delay;
-		//                         if delay was never set, fall through to d_ms
+		// Target offset: master-derived d_ms (updated every ~0.1s in timer block below).
+		// If master SM is stale (holding == true) or not yet received, freeze at last
+		// programmed delay rather than snapping to zero.
 		double targetMs;
-		if (fusion.source == FusionState::Source::LTC)
+		if (masterValid)
 			targetMs = d_ms;
-		else if (fusion.source == FusionState::Source::AudioFallback)
-			targetMs = fusion.selectedMs;
 		else if (activeDelayMs != 0.0)
-			targetMs = activeDelayMs;
+			targetMs = activeDelayMs;  // hold-last-delay until master comes back
 		else
-			targetMs = d_ms;
+			targetMs = 0.0;
 
-		// Rebuild delay engine if fusion target has shifted by more than 2 frames
+		// Rebuild delay engine if master target has shifted by more than 2 frames
 		const double rebuildThreshMs = 2000.0 / fps;
 		if (active_delay && activeDelayMs != 0.0 && targetMs != 0.0 &&
 		    std::abs(targetMs - activeDelayMs) > rebuildThreshMs)
@@ -735,7 +710,7 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			activeDelayMs = 0.0;
 		}
 
-		delay_ms = std::to_string(std::abs(delay_frames));
+		delay_ms   = std::to_string((int)std::round(std::abs(d_ms)));
 		o_delay_ms = std::to_string((int)std::round(std::abs(targetMs)));
 
 		myParameter->setValueNotifyingHost(static_cast<float>((std::abs(targetMs) + std::floor(by_slider)) / 4000));
@@ -772,101 +747,84 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 				delay(write1, i, chnl1);
 			}
 
-			if (fps == 30)
-			{
-				processTimeCode(write1[i], chnl1, tc, i, currentSampleRate, 0);
-				processTimeCode(write2[i], chnl2, output_c2, i, currentSampleRate, 0);
-			}
-			else if (fps == 25)
-			{
-				processTimeCode(write1[i], chnl1, tc, i, currentSampleRate, 2);
-				processTimeCode(write2[i], chnl2, output_c2, i, currentSampleRate, 2);
-			}
+			// Decode delayed output for display
+			processTimeCode(write1[i], chnl1, tc, i, (float)currentSampleRate, fpsIndex);
 		}
 		else
 		{
 			tc = input_ch1;
-			output_c2 = input_ch2;
 			chnl1.clear();
 			chnl2.clear();
 			activeDelayMs = 0.0;
 		}
 
-		prev_ms = d_ms;
-		prev_frames = delay_frames;
-
-		// Update diagnostic outputs every ~0.1s
+		// Update diagnostics + read master SM every ~0.1s
 		if (++dt_sample_counter >= (int)(currentSampleRate * 0.1))
 		{
 			dt_sample_counter = 0;
 
-			// Copy per-channel metrics from input decoders
 			ch1_Q_LTC           = chnl1_in.Q_LTC;
-			ch2_Q_LTC           = chnl2_in.Q_LTC;
 			ch1_ltc_state       = (int)chnl1_in.ltc_state;
-			ch2_ltc_state       = (int)chnl2_in.ltc_state;
 			ch1_estimated_fps   = chnl1_in.estimated_fps;
-			ch2_estimated_fps   = chnl2_in.estimated_fps;
 			ch1_decoder_resets  = chnl1_in.decoder_reset_count;
-			ch2_decoder_resets  = chnl2_in.decoder_reset_count;
 			ch1_rejected_frames = chnl1_in.rejected_frames_count;
-			ch2_rejected_frames = chnl2_in.rejected_frames_count;
+			fallback_requested  = chnl1_in.fallback_requested;
 
-			// Accumulate Δt history (skip zero — no valid measurement yet)
-			if (d_ms != 0.0)
-			{
-				dt_history.push_back(d_ms);
-				if ((int)dt_history.size() > 20)
-					dt_history.pop_front();
-			}
-
-			// Channel agreement: std deviation of Δt in window
-			if (dt_history.size() >= 2)
-			{
-				double mean = 0.0;
-				for (double v : dt_history) mean += v;
-				mean /= (double)dt_history.size();
-				double variance = 0.0;
-				for (double v : dt_history) { double d = v - mean; variance += d * d; }
-				dt_deviation = std::sqrt(variance / (double)dt_history.size());
-			}
-
-			// Drift suspicion: linear regression slope of Δt over time
-			if (dt_history.size() >= 3)
-			{
-				int n = (int)dt_history.size();
-				double sx = 0, sy = 0, sxy = 0, sxx = 0;
-				for (int j = 0; j < n; ++j)
-				{
-					sx  += j;
-					sy  += dt_history[j];
-					sxy += j * dt_history[j];
-					sxx += (double)j * j;
-				}
-				double denom = n * sxx - sx * sx;
-				if (std::abs(denom) > 1e-9)
-				{
-					// slope in ms per 0.1s interval → convert to ms/s
-					drift_per_s = (n * sxy - sx * sy) / denom * 10.0;
-
-					// Require 3 consecutive windows above threshold before flagging.
-					// Occasional decode errors at SNR ~20 dB can produce spikes
-					// above 2 ms/s without any real drift present.
-					if (std::abs(drift_per_s) > 5.0)
-						++drift_confirm_count;
-					else
-						drift_confirm_count = 0;
-					drift_suspected = (drift_confirm_count >= 3);
-				}
-			}
-
-			fallback_requested = (chnl1_in.fallback_requested || chnl2_in.fallback_requested || drift_suspected);
-
-			// Audio fallback + fusion snapshot
+			// Audio fallback snapshot (Step 6 will wire NCC against master reference)
 			aud_deltaMs       = audFallback.deltaAudMs;
 			aud_conf          = audFallback.confAud;
-			aud_fusionSource  = (int)fusion.source;
+			aud_fusionSource  = 0;
 			aud_activeDelayMs = activeDelayMs;
+
+			// Read master SM; compute dt_ltc_ms = tc_self_ms − tc_ref_ms
+			if (shm.isOpen())
+			{
+				const MasterSlot& m = shm.get()->master;
+				int64_t tc_ref_ms_local    = 0;
+				uint8_t master_ltc_state   = 0;
+				bool    master_valid_local = false;
+
+				uint32_t seq1, seq2;
+				do {
+					seq1 = seqcount_read_begin(m.writeSeq);
+					tc_ref_ms_local    = m.tc_ref_ms;
+					master_ltc_state   = m.ltc_state;
+					master_valid_local = m.valid;
+					seq2 = seqcount_read_end(m.writeSeq);
+				} while (seq1 != seq2);
+
+				const int64_t tc_self_ms_local =
+					  (int64_t)chnl1_in.hrs   * 3600000LL
+					+ (int64_t)chnl1_in.mnts  *   60000LL
+					+ (int64_t)chnl1_in.scnds *    1000LL
+					+ (int64_t)chnl1_in.frms  *    1000LL / std::max(1, fps);
+
+				if (master_valid_local && master_ltc_state >= 1 && tc_ref_ms_local != 0)
+				{
+					const double newDtMs = (double)(tc_self_ms_local - tc_ref_ms_local);
+
+					// Jump detection: reset delay engine if master offset jumps > 2 frames
+					const double frameMs = 1000.0 / fps;
+					if (activeDelayMs != 0.0 && std::abs(newDtMs - d_ms) > 2.0 * frameMs)
+					{
+						chnl1.clear();
+						chnl2.clear();
+						activeDelayMs = 0.0;
+					}
+
+					d_ms              = newDtMs;
+					lastMasterWriteMs = juce::Time::currentTimeMillis();
+					masterValid       = true;
+					holding           = false;
+				}
+				else if (lastMasterWriteMs != 0 &&
+				         juce::Time::currentTimeMillis() - lastMasterWriteMs > 2000)
+				{
+					// Master data stale: freeze delay at current activeDelayMs
+					masterValid = false;
+					holding     = true;
+				}
+			}
 		}
 	}
 }

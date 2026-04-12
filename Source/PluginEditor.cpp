@@ -354,9 +354,28 @@ void NewProjectAudioProcessorEditor::timerCallback()
 
 	// Version label repurposed as mode/SM status indicator
 	if (audioProcessor.pluginMode == PluginMode::Master)
+	{
 		version.setText("Master | SM:" + juce::String(audioProcessor.shmWriteCount), juce::dontSendNotification);
+		version.setColour(juce::Label::textColourId, juce::Colours::white);
+	}
 	else
-		version.setText("Slave | slot " + juce::String(audioProcessor.slotId), juce::dontSendNotification);
+	{
+		if (audioProcessor.holding)
+		{
+			version.setText("Slave | slot " + juce::String(audioProcessor.slotId) + " [HOLD]", juce::dontSendNotification);
+			version.setColour(juce::Label::textColourId, juce::Colours::orange);
+		}
+		else if (audioProcessor.masterValid)
+		{
+			version.setText("Slave | slot " + juce::String(audioProcessor.slotId) + " | SYNC", juce::dontSendNotification);
+			version.setColour(juce::Label::textColourId, juce::Colours::lightgreen);
+		}
+		else
+		{
+			version.setText("Slave | slot " + juce::String(audioProcessor.slotId) + " | wait", juce::dontSendNotification);
+			version.setColour(juce::Label::textColourId, juce::Colours::grey);
+		}
+	}
 
 	input.setText("INPUT", juce::dontSendNotification);
 	delay.setText("IN DELAY, frames", juce::dontSendNotification);
