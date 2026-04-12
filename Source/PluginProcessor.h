@@ -370,6 +370,9 @@ public:
 	int    aud_fusionSource   = 0;    // 0=None, 1=LTC, 2=AudioFallback
 	double aud_activeDelayMs  = 0.0;  // offset actually programmed into delay engine
 
+	// Shared-memory diagnostics (master mode)
+	uint32_t shmWriteCount = 0;       // incremented on every SM write; read by GUI timer
+
 public:
 	//==============================================================================
 	NewProjectAudioProcessor();
@@ -415,6 +418,7 @@ private:
 	void pushAudioAnalysisSample(float ch1, float ch2);
 	void estimateAudioFallbackOffset();
 	void fuseLtcAndAudioFallback();
+	void writeMasterSlot();   // master mode only: snapshot LTC state + novelty → shm
 
 private:
 	SharedGroupMemory shm;   // opened in prepareToPlay, closed in releaseResources

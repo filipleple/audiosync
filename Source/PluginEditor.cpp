@@ -270,8 +270,7 @@ void NewProjectAudioProcessorEditor::resized()
 	value_MIDI.setTopLeftPosition(290, 180);
 	value_MIDI.moved();
 
-	//version label
-	version.setText("ver 1.4", juce::dontSendNotification);
+	//version label (text updated dynamically in timerCallback)
 	version.setSize(170, 75);
 	version.setTopLeftPosition(290, 230);
 	version.moved();
@@ -352,6 +351,12 @@ void NewProjectAudioProcessorEditor::timerCallback()
 
 	show_MIDI.setText("OUT MIDI, ms", juce::dontSendNotification);
 	value_MIDI.setText(std::to_string(std::floor(audioProcessor.by_slider) + std::abs(audioProcessor.d_ms)), juce::dontSendNotification);
+
+	// Version label repurposed as mode/SM status indicator
+	if (audioProcessor.pluginMode == PluginMode::Master)
+		version.setText("Master | SM:" + juce::String(audioProcessor.shmWriteCount), juce::dontSendNotification);
+	else
+		version.setText("Slave | slot " + juce::String(audioProcessor.slotId), juce::dontSendNotification);
 
 	input.setText("INPUT", juce::dontSendNotification);
 	delay.setText("IN DELAY, frames", juce::dontSendNotification);

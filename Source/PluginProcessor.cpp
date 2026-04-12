@@ -568,6 +568,37 @@ void NewProjectAudioProcessor::fuseLtcAndAudioFallback()
 	}
 }
 
+void NewProjectAudioProcessor::writeMasterSlot()
+{
+	MasterSlot& m = shm.get()->master;
+
+	// Timecode to milliseconds; frms converted at the current FPS setting
+	const int64_t tc_ms = (int64_t)chnl1_in.hrs   * 3600000LL
+	                    + (int64_t)chnl1_in.mnts   * 60000LL
+	                    + (int64_t)chnl1_in.scnds  * 1000LL
+	                    + (int64_t)chnl1_in.frms   * 1000LL / std::max(1, fps);
+
+	const int N = audFallback.windowFrames;   // 200
+
+	seqcount_write_begin(m.writeSeq);
+
+	m.tc_ref_ms        = tc_ms;
+	m.Q_ref            = chnl1_in.Q_LTC;
+	m.ltc_state        = (uint8_t)chnl1_in.ltc_state;
+	m.valid            = (audFallback.framesFilled >= N);
+	m.nov_writePos     = audFallback.writePos;
+	m.nov_framesFilled = audFallback.framesFilled;
+
+	// Copy the full novelty1 circular buffer verbatim; the slave uses
+	// nov_writePos to know where the oldest frame sits.
+	for (int i = 0; i < N; ++i)
+		m.nov_ref[i] = audFallback.novelty1[i];
+
+	seqcount_write_end(m.writeSeq);
+
+	++shmWriteCount;
+}
+
 void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
 	juce::ScopedNoDenormals noDenormals;
@@ -588,6 +619,51 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
 	auto* write1 = buffer.getWritePointer(0);
 	auto* write2 = buffer.getWritePointer(1);
+
+	// =========================================================================
+	// MASTER PATH
+	// Decode LTC from the designated channel, extract novelty, write SM.
+	// Audio passes through unchanged — master is the reference, no delay.
+	// =========================================================================
+	if (pluginMode == PluginMode::Master)
+	{
+		const int fpsIndex = (fps == 25) ? 2 : 0;
+
+		for (int i = 0; i < buffer.getNumSamples(); ++i)
+		{
+			// Read from the designated LTC channel; always decode into chnl1_in.
+			float ltcSample = (ltcChannel == 0) ? write1[i] : write2[i];
+			processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex);
+
+			// Novelty extraction for the reference curve.
+			// ch2 = 0.0f — novelty2 is unused in master mode (removed in Step 11).
+			pushAudioAnalysisSample(ltcSample, 0.0f);
+
+			// Update diagnostics + write SM every ~0.1 s.
+			// Counter is per-sample (matching the slave path) — do NOT move this outside
+			// the loop; per-block counting would require thousands of blocks to fire.
+			if (++dt_sample_counter >= (int)(currentSampleRate * 0.1))
+			{
+				dt_sample_counter = 0;
+				ch1_Q_LTC         = chnl1_in.Q_LTC;
+				ch1_ltc_state     = (int)chnl1_in.ltc_state;
+				ch1_estimated_fps = chnl1_in.estimated_fps;
+				input_ch1         = (chnl1_in.hrs  < 10 ? "0" : "") + std::to_string(chnl1_in.hrs)   + ":"
+				                  + (chnl1_in.mnts  < 10 ? "0" : "") + std::to_string(chnl1_in.mnts)  + ":"
+				                  + (chnl1_in.scnds < 10 ? "0" : "") + std::to_string(chnl1_in.scnds) + ":"
+				                  + (chnl1_in.frms  < 10 ? "0" : "") + std::to_string(chnl1_in.frms);
+
+				if (shm.isOpen())
+					writeMasterSlot();
+			}
+		}
+
+		return;   // skip all slave / stereo logic below
+	}
+
+	// =========================================================================
+	// SLAVE PATH (existing stereo logic — untouched until Step 5)
+	// =========================================================================
 
 	// MIDI: send (delay + slider) as 14-bit CC and pitch wheel
 	int value = static_cast<int>(static_cast<float>(((std::abs(d_ms) + by_slider) / 10000) * 16383.0f));
