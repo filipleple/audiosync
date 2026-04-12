@@ -13,6 +13,7 @@
 #include <deque>
 #include <array>
 #include <climits>
+#include "SharedGroupMemory.h"
 
 //==============================================================================
 
@@ -294,12 +295,28 @@ struct FusionState
 
 // ============================================================================
 
+enum class PluginMode { Master = 0, Slave = 1 };
+
 class NewProjectAudioProcessor : public juce::AudioProcessor
 #if JucePlugin_Enable_ARA
                              , public juce::AudioProcessorARAExtension
 #endif
 {
 public:
+	// =========================================================================
+	// Session configuration (persisted via getStateInformation)
+	// =========================================================================
+	PluginMode   pluginMode  = PluginMode::Slave;
+	juce::String groupName   = "group1";  // shared across master + all slaves
+	int          slotId      = 1;         // slave slot index 1-8 (ignored by master)
+	int          ltcChannel  = 0;         // 0 = Left, 1 = Right
+	juce::String slotLabel   = "";        // free-text label shown in master dashboard
+
+	// Slave runtime state (written by audio thread, read by GUI timer)
+	bool    masterValid       = false;    // true when master SM data is fresh
+	bool    holding           = false;    // true when delay is frozen (stale master)
+	int64_t lastMasterWriteMs = 0;        // juce::Time::currentTimeMillis() of last SM read
+
 	double currentSampleRate = 44100.0;
 	std::string tc = "--:--:--:--";
 	std::string output_c2 = "--:--:--:--";
@@ -389,6 +406,8 @@ private:
 	void fuseLtcAndAudioFallback();
 
 private:
+	SharedGroupMemory shm;   // opened in prepareToPlay, closed in releaseResources
+
 	tc_data chnl1;
 	tc_data chnl2;
 	tc_data chnl1_in;

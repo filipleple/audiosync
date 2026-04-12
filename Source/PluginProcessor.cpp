@@ -342,12 +342,20 @@ void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
 {
 	currentSampleRate = sampleRate;
 	audFallback.init(sampleRate);
-	juce::Logger::writeToLog("prepareToPlay sr=" + juce::String(sampleRate)
-	    + " block=" + juce::String(samplesPerBlock));
+
+	// Open (or re-open) the shared memory region for this group.
+	// SharedGroupMemory::open() calls close() internally, so re-entrant calls are safe.
+	if (!shm.open(groupName.toStdString()))
+		juce::Logger::writeToLog("AUTOSYNC: shm.open() failed for group \"" + groupName + "\"");
+	else
+		juce::Logger::writeToLog("AUTOSYNC: shm open OK  group=\"" + groupName
+		    + "\"  mode=" + (pluginMode == PluginMode::Master ? "Master" : "Slave")
+		    + "  slot=" + juce::String(slotId));
 }
 
 void NewProjectAudioProcessor::releaseResources()
 {
+	shm.close();
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -801,10 +809,27 @@ juce::AudioProcessorEditor* NewProjectAudioProcessor::createEditor()
 //==============================================================================
 void NewProjectAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
+	juce::XmlElement xml("AutosyncState");
+	xml.setAttribute("mode",    (int)pluginMode);
+	xml.setAttribute("group",   groupName);
+	xml.setAttribute("slot",    slotId);
+	xml.setAttribute("ltcch",   ltcChannel);
+	xml.setAttribute("label",   slotLabel);
+	copyXmlToBinary(xml, destData);
 }
 
 void NewProjectAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
+	auto xml = getXmlFromBinary(data, sizeInBytes);
+	if (xml == nullptr || !xml->hasTagName("AutosyncState"))
+		return;
+
+	pluginMode = (PluginMode)xml->getIntAttribute("mode",  (int)PluginMode::Slave);
+	groupName  = xml->getStringAttribute("group", "group1");
+	slotId     = juce::jlimit(1, 8, xml->getIntAttribute("slot",  1));
+	ltcChannel = juce::jlimit(0, 1, xml->getIntAttribute("ltcch", 0));
+	slotLabel  = xml->getStringAttribute("label", "");
+	// shm will be (re-)opened on the next prepareToPlay call.
 }
 
 //==============================================================================
