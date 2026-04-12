@@ -46,6 +46,11 @@ public:
 
 	float pulsesize = 9.1875;
 
+	// Absolute stream sample position at which the most recent LTC frame was
+	// decoded.  Set by handleTimecode() on each successful sync-word match.
+	// Used for sample-accurate cross-instance delay measurement (see processBlock).
+	int64_t last_decode_sample = 0;
+
 	int new_time = 0;
 	int old_time = 0;
 
@@ -413,7 +418,7 @@ public:
 
 private:
 	inline void processTimeCode(const float& sample, tc_data& channel, std::string& msg,
-		const int& index, const float& sr, const int& sl);
+		const int& index, const float& sr, const int& sl, int64_t abs_pos = 0);
 
 	void pushAudioAnalysisSample(float ch1, float ch2);
 	void estimateAudioFallbackOffset();
@@ -436,6 +441,11 @@ private:
 	AudioFallbackState audFallback;
 	FusionState        fusion;
 	double activeDelayMs = 0.0;  // offset currently programmed into the delay engine
+
+	// Monotonically increasing sample counter, reset on prepareToPlay.
+	// Used as the absolute sample position passed to handleTimecode so that
+	// master and slave decode-event positions can be compared sample-accurately.
+	int64_t totalSamplesProcessed = 0;
 
 	//==============================================================================
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NewProjectAudioProcessor)

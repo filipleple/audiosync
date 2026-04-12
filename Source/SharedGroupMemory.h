@@ -63,8 +63,9 @@ struct MasterSlot
     uint8_t ltc_state       = 0;      // 0=FAIL, 1=SUSPECT, 2=VALID
     uint8_t _pad0[2]        = {};     // keep int64_t below 8-byte aligned
 
-    int64_t tc_ref_ms       = 0;      // reference timecode in milliseconds
-    float   Q_ref           = 0.0f;
+    int64_t tc_ref_ms          = 0;      // reference timecode in milliseconds
+    int64_t ref_decode_sample  = 0;      // abs stream sample pos of last master LTC decode
+    float   Q_ref              = 0.0f;
 
     int     nov_writePos    = 0;      // circular buffer head (next write index)
     int     nov_framesFilled = 0;     // frames populated so far, saturates at 200

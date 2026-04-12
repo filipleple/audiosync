@@ -86,7 +86,7 @@ inline double calc_delay(tc_data& data1, tc_data& data2, int fps = 30)
 	return delay_ms;
 }
 
-inline void handleTimecode(const long double& sample, tc_data& data, const int& srate, const int& slider = 0)
+inline void handleTimecode(const long double& sample, tc_data& data, const int& srate, const int& slider = 0, int64_t abs_pos = 0)
 {
 	static const double frates[] = {30, 24, 25, 30000.0 / 1001};
 
@@ -210,6 +210,7 @@ inline void handleTimecode(const long double& sample, tc_data& data, const int& 
 
 					data.syncpos = 0;
 					data.syncstate = 2;
+					data.last_decode_sample = abs_pos;
 					data.new_time = ((data.hrs * 60 + data.mnts) * 60 + data.scnds) * 100 + data.frms;
 
 					// Quality: lock and sync-word hit counting
@@ -341,6 +342,7 @@ void NewProjectAudioProcessor::changeProgramName(int index, const juce::String& 
 void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
 	currentSampleRate = sampleRate;
+	totalSamplesProcessed = 0;
 	audFallback.init(sampleRate);
 
 	// Open (or re-open) the shared memory region for this group.
@@ -380,10 +382,10 @@ bool NewProjectAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts
 
 
 inline void NewProjectAudioProcessor::processTimeCode(const float& sample, tc_data& channel, std::string& msg,
-                                                      const int& index, const float& srate = 44100,
-                                                      const int& slider = 0)
+                                                      const int& index, const float& srate,
+                                                      const int& slider, int64_t abs_pos)
 {
-	handleTimecode(sample, channel, srate, slider);
+	handleTimecode(sample, channel, srate, slider, abs_pos);
 
 	if (channel.new_time != channel.old_time)
 	{
@@ -582,8 +584,9 @@ void NewProjectAudioProcessor::writeMasterSlot()
 
 	seqcount_write_begin(m.writeSeq);
 
-	m.tc_ref_ms        = tc_ms;
-	m.Q_ref            = chnl1_in.Q_LTC;
+	m.tc_ref_ms           = tc_ms;
+	m.ref_decode_sample   = chnl1_in.last_decode_sample;
+	m.Q_ref               = chnl1_in.Q_LTC;
 	m.ltc_state        = (uint8_t)chnl1_in.ltc_state;
 	m.valid            = (audFallback.framesFilled >= N);
 	m.nov_writePos     = audFallback.writePos;
@@ -602,6 +605,13 @@ void NewProjectAudioProcessor::writeMasterSlot()
 void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
 	juce::ScopedNoDenormals noDenormals;
+
+	// Snapshot the running sample counter BEFORE incrementing it.
+	// Both master and slave call prepareToPlay at session start so their
+	// counters start from the same origin, keeping positions comparable.
+	const int64_t bufferStartSample = totalSamplesProcessed;
+	totalSamplesProcessed += buffer.getNumSamples();
+
 	static int counter = 0;
 	if ((++counter % 200) == 0)
 	{
@@ -633,7 +643,7 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 		{
 			// Read from the designated LTC channel; always decode into chnl1_in.
 			float ltcSample = (ltcChannel == 0) ? write1[i] : write2[i];
-			processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex);
+			processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex, bufferStartSample + i);
 
 			// Novelty extraction for the reference curve.
 			// ch2 = 0.0f — novelty2 is unused in master mode (removed in Step 11).
@@ -688,7 +698,7 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
 		// Decode own LTC from the configured channel only (pre-delay)
 		float ltcSample = (ltcChannel == 0) ? write1[i] : write2[i];
-		processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex);
+		processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex, bufferStartSample + i);
 
 		// Both channels fed to novelty extractor for Step 6 audio fallback NCC
 		pushAudioAnalysisSample(write1[i], write2[i]);
@@ -748,7 +758,7 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
 			// Decode post-delay LTC from the configured channel for tc display
 			float ltcOut = (ltcChannel == 0) ? write1[i] : write2[i];
-			processTimeCode(ltcOut, chnl1, tc, i, (float)currentSampleRate, fpsIndex);
+			processTimeCode(ltcOut, chnl1, tc, i, (float)currentSampleRate, fpsIndex, bufferStartSample + i);
 		}
 		else
 		{
@@ -780,16 +790,18 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			if (shm.isOpen())
 			{
 				const MasterSlot& m = shm.get()->master;
-				int64_t tc_ref_ms_local    = 0;
-				uint8_t master_ltc_state   = 0;
-				bool    master_valid_local = false;
+				int64_t tc_ref_ms_local       = 0;
+				int64_t ref_decode_sample_local = 0;
+				uint8_t master_ltc_state      = 0;
+				bool    master_valid_local    = false;
 
 				uint32_t seq1, seq2;
 				do {
 					seq1 = seqcount_read_begin(m.writeSeq);
-					tc_ref_ms_local    = m.tc_ref_ms;
-					master_ltc_state   = m.ltc_state;
-					master_valid_local = m.valid;
+					tc_ref_ms_local         = m.tc_ref_ms;
+					ref_decode_sample_local = m.ref_decode_sample;
+					master_ltc_state        = m.ltc_state;
+					master_valid_local      = m.valid;
 					seq2 = seqcount_read_end(m.writeSeq);
 				} while (seq1 != seq2);
 
@@ -801,7 +813,28 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
 				if (master_valid_local && master_ltc_state >= 1 && tc_ref_ms_local != 0)
 				{
-					const double newDtMs = (double)(tc_self_ms_local - tc_ref_ms_local);
+					// Sample-accurate delay: measures how many samples apart the two
+					// decoders' last frame-detect events were on the shared timeline,
+					// then subtracts the LTC frame-number difference so that perfectly
+					// aligned tracks always read 0ms regardless of which frames were
+					// compared or when the 0.1s update ticks fired.
+					//
+					//   delay_ms = (A_slave - A_master)/sr*1000 - (TC_self - TC_ref)
+					//
+					// Falls back to the old frame-number comparison if either side
+					// hasn't decoded a frame yet (positions still 0).
+					double newDtMs;
+					if (chnl1_in.last_decode_sample != 0 && ref_decode_sample_local != 0)
+					{
+						const double sampleDiff_ms =
+							(double)(chnl1_in.last_decode_sample - ref_decode_sample_local)
+							/ currentSampleRate * 1000.0;
+						newDtMs = sampleDiff_ms - (double)(tc_self_ms_local - tc_ref_ms_local);
+					}
+					else
+					{
+						newDtMs = (double)(tc_self_ms_local - tc_ref_ms_local);
+					}
 
 					// Jump detection: reset delay engine if master offset jumps > 2 frames
 					const double frameMs = 1000.0 / fps;
