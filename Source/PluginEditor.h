@@ -71,6 +71,18 @@ private:
 	juce::Label qual_sync_label;
 	juce::Label qual_fallback_label;
 
+	// Config panel (persisted; wired directly to processor members)
+	juce::Label      cfg_mode_label;
+	juce::ComboBox   cfg_mode_box;
+	juce::Label      cfg_group_label;
+	juce::TextEditor cfg_group_editor;
+	juce::Label      cfg_slot_label;
+	juce::ComboBox   cfg_slot_box;
+	juce::Label      cfg_ltcch_label;
+	juce::ComboBox   cfg_ltcch_box;
+	juce::Label      cfg_label_label;
+	juce::TextEditor cfg_label_editor;
+
 	double delay_by_slider = 0;
 
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NewProjectAudioProcessorEditor)

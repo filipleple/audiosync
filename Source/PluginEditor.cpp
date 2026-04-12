@@ -102,7 +102,84 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
 	addAndMakeVisible(qual_sync_label);
 	addAndMakeVisible(qual_fallback_label);
 
-	setSize(400, 400);
+	// -------------------------------------------------------------------------
+	// Config panel — initialised from processor state (already restored by
+	// setStateInformation before the editor is constructed).
+	// -------------------------------------------------------------------------
+
+	// Mode
+	cfg_mode_label.setText("Mode", juce::dontSendNotification);
+	addAndMakeVisible(cfg_mode_label);
+	cfg_mode_box.addItem("Master", 1);   // id 1 → enum 0 (Master)
+	cfg_mode_box.addItem("Slave",  2);   // id 2 → enum 1 (Slave)
+	cfg_mode_box.setSelectedId((int)audioProcessor.pluginMode + 1, juce::dontSendNotification);
+	cfg_mode_box.onChange = [&]()
+	{
+		audioProcessor.pluginMode = (PluginMode)(cfg_mode_box.getSelectedId() - 1);
+	};
+	addAndMakeVisible(cfg_mode_box);
+
+	// Group name
+	cfg_group_label.setText("Group", juce::dontSendNotification);
+	addAndMakeVisible(cfg_group_label);
+	cfg_group_editor.setText(audioProcessor.groupName, false);
+	cfg_group_editor.setInputRestrictions(16,
+		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-");
+	cfg_group_editor.onReturnKey = [&]()
+	{
+		juce::String g = cfg_group_editor.getText().trim();
+		if (g.isEmpty()) { cfg_group_editor.setText(audioProcessor.groupName, false); return; }
+		audioProcessor.groupName = g;
+		audioProcessor.reopenShm();
+	};
+	cfg_group_editor.onFocusLost = [&]()
+	{
+		juce::String g = cfg_group_editor.getText().trim();
+		if (g.isEmpty()) { cfg_group_editor.setText(audioProcessor.groupName, false); return; }
+		if (g != audioProcessor.groupName)
+		{
+			audioProcessor.groupName = g;
+			audioProcessor.reopenShm();
+		}
+	};
+	addAndMakeVisible(cfg_group_editor);
+
+	// Slot ID (1-8, slave only)
+	cfg_slot_label.setText("Slot", juce::dontSendNotification);
+	addAndMakeVisible(cfg_slot_label);
+	for (int i = 1; i <= 8; ++i)
+		cfg_slot_box.addItem(juce::String(i), i);
+	cfg_slot_box.setSelectedId(audioProcessor.slotId, juce::dontSendNotification);
+	cfg_slot_box.onChange = [&]()
+	{
+		audioProcessor.slotId = cfg_slot_box.getSelectedId();
+	};
+	addAndMakeVisible(cfg_slot_box);
+
+	// LTC channel (L / R)
+	cfg_ltcch_label.setText("LTC ch", juce::dontSendNotification);
+	addAndMakeVisible(cfg_ltcch_label);
+	cfg_ltcch_box.addItem("L", 1);
+	cfg_ltcch_box.addItem("R", 2);
+	cfg_ltcch_box.setSelectedId(audioProcessor.ltcChannel + 1, juce::dontSendNotification);
+	cfg_ltcch_box.onChange = [&]()
+	{
+		audioProcessor.ltcChannel = cfg_ltcch_box.getSelectedId() - 1;
+	};
+	addAndMakeVisible(cfg_ltcch_box);
+
+	// Slot label (free text, slave only)
+	cfg_label_label.setText("Label", juce::dontSendNotification);
+	addAndMakeVisible(cfg_label_label);
+	cfg_label_editor.setText(audioProcessor.slotLabel, false);
+	cfg_label_editor.setInputRestrictions(31);
+	cfg_label_editor.onTextChange = [&]()
+	{
+		audioProcessor.slotLabel = cfg_label_editor.getText();
+	};
+	addAndMakeVisible(cfg_label_editor);
+
+	setSize(400, 480);
 	startTimer(1);
 }
 
@@ -115,6 +192,7 @@ void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
 {
 	g.setColour(juce::Colours::grey);
 	g.drawHorizontalLine(302, 4.0f, (float)getWidth() - 4.0f);
+	g.drawHorizontalLine(401, 4.0f, (float)getWidth() - 4.0f);
 }
 
 void NewProjectAudioProcessorEditor::resized()
@@ -227,6 +305,46 @@ void NewProjectAudioProcessorEditor::resized()
 	qual_fallback_label.setSize(400, 16);
 	qual_fallback_label.setTopLeftPosition(4, 379);
 	qual_fallback_label.moved();
+
+	// Config panel — two rows below the second separator (y=401)
+	// Row 1: Mode | Group | Slot | LTC ch
+	const int cfgY1label = 406;   // mini-label row
+	const int cfgY1ctrl  = 420;   // control row
+	const int cfgCtrlH   = 24;
+
+	cfg_mode_label.setSize(40, 13);
+	cfg_mode_label.setTopLeftPosition(4, cfgY1label);
+
+	cfg_mode_box.setSize(65, cfgCtrlH);
+	cfg_mode_box.setTopLeftPosition(4, cfgY1ctrl);
+
+	cfg_group_label.setSize(45, 13);
+	cfg_group_label.setTopLeftPosition(74, cfgY1label);
+
+	cfg_group_editor.setSize(100, cfgCtrlH);
+	cfg_group_editor.setTopLeftPosition(74, cfgY1ctrl);
+
+	cfg_slot_label.setSize(30, 13);
+	cfg_slot_label.setTopLeftPosition(180, cfgY1label);
+
+	cfg_slot_box.setSize(42, cfgCtrlH);
+	cfg_slot_box.setTopLeftPosition(180, cfgY1ctrl);
+
+	cfg_ltcch_label.setSize(48, 13);
+	cfg_ltcch_label.setTopLeftPosition(228, cfgY1label);
+
+	cfg_ltcch_box.setSize(42, cfgCtrlH);
+	cfg_ltcch_box.setTopLeftPosition(228, cfgY1ctrl);
+
+	// Row 2: Label (full width)
+	const int cfgY2label = 450;
+	const int cfgY2ctrl  = 464;
+
+	cfg_label_label.setSize(40, 13);
+	cfg_label_label.setTopLeftPosition(4, cfgY2label);
+
+	cfg_label_editor.setSize(388, cfgCtrlH);
+	cfg_label_editor.setTopLeftPosition(4, cfgY2ctrl);
 }
 
 void NewProjectAudioProcessorEditor::timerCallback()

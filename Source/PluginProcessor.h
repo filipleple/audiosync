@@ -317,6 +317,17 @@ public:
 	bool    holding           = false;    // true when delay is frozen (stale master)
 	int64_t lastMasterWriteMs = 0;        // juce::Time::currentTimeMillis() of last SM read
 
+	// Called from the editor when the group name is changed at runtime.
+	// Closes the current segment and opens (or creates) the new one.
+	// Safe to call from the message thread between playback sessions;
+	// do NOT call while processBlock is running.
+	void reopenShm()
+	{
+		shm.close();
+		if (!shm.open(groupName.toStdString()))
+			juce::Logger::writeToLog("AUTOSYNC: reopenShm() failed for group \"" + groupName + "\"");
+	}
+
 	double currentSampleRate = 44100.0;
 	std::string tc = "--:--:--:--";
 	std::string output_c2 = "--:--:--:--";
