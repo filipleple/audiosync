@@ -680,9 +680,13 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
 	for (int i = 0; i < buffer.getNumSamples(); ++i)
 	{
+		// Fill const_buf for BOTH channels so delay() can read from them immediately
+		// (without this, the channel whose const_buf is empty outputs silence for
+		// the first delay_size samples while its delay_buf fills up).
 		handle_const_delay(write1[i], chnl1);
+		handle_const_delay(write2[i], chnl2);
 
-		// Decode own LTC from the configured channel only
+		// Decode own LTC from the configured channel only (pre-delay)
 		float ltcSample = (ltcChannel == 0) ? write1[i] : write2[i];
 		processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex);
 
@@ -717,26 +721,15 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 
 		if (active_delay)
 		{
-			if (targetMs > 0 && !chnl1.active_delay && !chnl2.active_delay)
+			// Slave mode: delay BOTH channels uniformly by |targetMs|.
+			// The old sign-based single-channel logic was for the stereo PoC;
+			// in master-slave mode the whole slave track shifts in time as one.
+			if (!chnl1.active_delay && !chnl2.active_delay && targetMs != 0.0)
 			{
-				chnl2.active_delay = true;
-				chnl1.active_delay = false;
-			}
-			if (targetMs < 0 && !chnl1.active_delay && !chnl2.active_delay)
-			{
-				chnl2.active_delay = false;
 				chnl1.active_delay = true;
+				chnl2.active_delay = true;
 			}
 
-			if (chnl2.active_delay)
-			{
-				if (chnl2.delay_size == 0)
-				{
-					chnl2.delay_size = (size_t)std::floor(std::abs(targetMs) / 1000.0 * currentSampleRate);
-					activeDelayMs = targetMs;
-				}
-				delay(write2, i, chnl2);
-			}
 			if (chnl1.active_delay)
 			{
 				if (!chnl1.delay_size)
@@ -746,9 +739,16 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 				}
 				delay(write1, i, chnl1);
 			}
+			if (chnl2.active_delay)
+			{
+				if (!chnl2.delay_size)
+					chnl2.delay_size = (size_t)std::floor(std::abs(targetMs) / 1000.0 * currentSampleRate);
+				delay(write2, i, chnl2);
+			}
 
-			// Decode delayed output for display
-			processTimeCode(write1[i], chnl1, tc, i, (float)currentSampleRate, fpsIndex);
+			// Decode post-delay LTC from the configured channel for tc display
+			float ltcOut = (ltcChannel == 0) ? write1[i] : write2[i];
+			processTimeCode(ltcOut, chnl1, tc, i, (float)currentSampleRate, fpsIndex);
 		}
 		else
 		{

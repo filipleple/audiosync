@@ -350,7 +350,7 @@ void NewProjectAudioProcessorEditor::timerCallback()
 {
 
 	show_MIDI.setText("OUT MIDI, ms", juce::dontSendNotification);
-	value_MIDI.setText(std::to_string(std::floor(audioProcessor.by_slider) + std::abs(audioProcessor.d_ms)), juce::dontSendNotification);
+	value_MIDI.setText(juce::String((int)std::round(std::abs(audioProcessor.d_ms) + audioProcessor.by_slider)) + " ms", juce::dontSendNotification);
 
 	// Version label repurposed as mode/SM status indicator
 	if (audioProcessor.pluginMode == PluginMode::Master)
