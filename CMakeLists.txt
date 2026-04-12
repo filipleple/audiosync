@@ -58,3 +58,8 @@ target_link_libraries(TsimafeiPlugin PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
+
+# shm_open / shm_unlink live in librt on Linux (not needed on macOS or Windows).
+if (UNIX AND NOT APPLE)
+    target_link_libraries(TsimafeiPlugin PRIVATE rt)
+endif()
