@@ -65,11 +65,14 @@ struct MasterSlot
 
     int64_t tc_ref_ms          = 0;      // reference timecode in milliseconds
     int64_t ref_decode_sample  = 0;      // abs stream sample pos of last master LTC decode
+    int64_t nov_anchor_sample  = 0;      // abs stream sample pos when novelty was last written
+                                         // used by slaves to correct for async SM read latency
+
     float   Q_ref              = 0.0f;
 
-    int     nov_writePos    = 0;      // circular buffer head (next write index)
-    int     nov_framesFilled = 0;     // frames populated so far, saturates at 200
-    float   nov_ref[200]    = {};     // reference novelty curve (~800 bytes)
+    int     nov_writePos     = 0;      // circular buffer head (next write index)
+    int     nov_framesFilled = 0;      // frames populated so far, saturates at 400
+    float   nov_ref[400]     = {};     // reference novelty curve (4 s at 10 ms/hop, ~1600 bytes)
 };
 
 // Written by one slave instance; read by the master (for the dashboard).

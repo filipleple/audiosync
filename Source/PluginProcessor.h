@@ -237,6 +237,37 @@ struct AudioFallbackState
 	int    refreshEvery = 20;
 	double hopMs        = 10.0;
 
+	// 1-pole HPF (applied per-sample before energy accumulation).
+	// Strips DC and sub-100 Hz content so energy novelty responds to
+	// transients/speech rather than low-frequency rumble or carrier drift.
+	float hpfPrevX1 = 0.0f, hpfPrevY1 = 0.0f;
+	float hpfPrevX2 = 0.0f, hpfPrevY2 = 0.0f;
+	float hpfAlpha  = 0.9872f;  // overwritten in init() from sampleRate; 100 Hz @ 48 kHz
+
+	float applyHPF(float x, float& prevX, float& prevY) const noexcept
+	{
+		float y = hpfAlpha * (prevY + x - prevX);
+		prevX = x;
+		prevY = y;
+		return y;
+	}
+
+	// Activity gate: slow noise-floor follower + dB threshold.
+	// NCC estimation is suppressed when both channels are below the gate so the
+	// estimator doesn't lock onto noise during silence or steady-state content.
+	float noiseFloor1  = 1e-8f;
+	float noiseFloor2  = 1e-8f;
+	bool  activityGate = false;
+	// Asymmetric noise-floor follower.
+	// RISE: slow (τ ≈ 2 s at 10 ms/hop) — prevents gate from fluttering open on
+	//       transient spikes.
+	// FALL: fast (τ ≈ 50 ms at 10 ms/hop) — floor drops quickly after a loud
+	//       signal (e.g. LTC carrier) stops, so quieter speech can trip the gate
+	//       within ~150-250 ms instead of waiting 5-15 s.
+	static constexpr float NOISE_FLOOR_TC_RISE = 0.995f;
+	static constexpr float NOISE_FLOOR_TC_FALL = 0.80f;
+	static constexpr float ACTIVITY_GATE_DB    = 8.0f;   // dB above tracked noise floor
+
 	// Per-hop energy accumulators
 	float energyAcc1       = 0.0f;
 	float energyAcc2       = 0.0f;
@@ -270,6 +301,14 @@ struct AudioFallbackState
 	// Must satisfy: NARROW_HALF < windowFrames/2 to keep meaningful overlap.
 	static constexpr int NARROW_HALF = 30;
 
+	// Effective NCC window in anchored mode (frames).
+	// Using only the most recent ANCHORED_WIN frames (1.2 s) instead of the
+	// full 400-frame buffer means the estimator reacts within ~1.2 s after a
+	// manual track shift, rather than waiting 4 s for the full buffer to turn over.
+	// Must satisfy: ANCHORED_WIN > 2 * NARROW_HALF (= 60) to maintain adequate
+	// overlap at ±NARROW_HALF lag.
+	static constexpr int ANCHORED_WIN = 120;
+
 	// Estimation results
 	double deltaAudMs  = 0.0;
 	double confAud     = 0.0;
@@ -284,8 +323,11 @@ struct AudioFallbackState
 	{
 		hopMs        = 10.0;
 		hopSamples   = (int)std::round(sampleRate * 0.010);
-		windowFrames = 200;
-		lagRange     = 150;
+		windowFrames = 400;   // 4 s window — supports anchored NCC up to ±3.6 s offset
+		lagRange     = 200;   // ±2 s wide search (50% overlap at max lag with N=400)
+
+		// HPF: 1-pole IIR, cutoff 100 Hz.  alpha = 1 / (1 + 2π·fc/sr)
+		hpfAlpha = (float)(1.0 / (1.0 + 2.0 * M_PI * 100.0 / sampleRate));
 		refreshEvery = 20;
 		novelty1.assign(windowFrames, 0.0f);
 		novelty2.assign(windowFrames, 0.0f);
@@ -309,6 +351,9 @@ struct AudioFallbackState
 		anchorMs  = 0.0;
 		anchorHops = 0;
 		lastEstimateAnchored = false;
+		hpfPrevX1 = hpfPrevY1 = hpfPrevX2 = hpfPrevY2 = 0.0f;
+		noiseFloor1 = noiseFloor2 = 1e-8f;
+		activityGate = false;
 	}
 };
 
@@ -319,6 +364,67 @@ struct FusionState
 	double selectedMs     = 0.0;
 	double selectedConf   = 0.0;
 	bool   fallbackActive = false;
+};
+
+// ============================================================================
+// Alpha-beta tracker: smooths raw NCC estimates before they reach the delay
+// line and enforces a velocity cap so the fallback can't chase moving sources.
+// ============================================================================
+
+struct AlphaBetaState
+{
+	double  estMs        = 0.0;   // current delay estimate (ms)
+	double  velMsPerS    = 0.0;   // velocity / drift estimate (ms/s)
+	bool    initialized  = false;
+	int64_t lastUpdateMs = 0;     // juce::Time::currentTimeMillis() at last update
+
+	static constexpr double ALPHA            = 0.20;
+	static constexpr double BETA             = 0.02;
+	static constexpr double MAX_VEL_MS_PER_S = 0.20;  // §8 rate limit on |velMsPerS|
+
+	// Call once at LTC→fallback transition to prime from the last good LTC value.
+	void seed(double d0Ms)
+	{
+		estMs        = d0Ms;
+		velMsPerS    = 0.0;
+		initialized  = true;
+		lastUpdateMs = juce::Time::currentTimeMillis();
+	}
+
+	// Called every NCC refresh cycle (~200 ms).
+	// measuredMs    — NCC/fusion output (ignored when !measuredValid).
+	// measuredValid — false means coast: predict forward on current velocity.
+	void update(double measuredMs, bool measuredValid)
+	{
+		const int64_t now = juce::Time::currentTimeMillis();
+		const double  dt  = std::max(0.001, (double)(now - lastUpdateMs) * 0.001);
+		lastUpdateMs = now;
+
+		const double predicted = estMs + velMsPerS * dt;
+
+		if (measuredValid)
+		{
+			const double r = measuredMs - predicted;
+			estMs     = predicted + ALPHA * r;
+			velMsPerS = velMsPerS + BETA * r / dt;
+		}
+		else
+		{
+			estMs = predicted;
+			// velocity unchanged — coast
+		}
+
+		// §8: clamp velocity so the fallback can't track acoustic source movement
+		velMsPerS = std::max(-MAX_VEL_MS_PER_S,
+		            std::min( MAX_VEL_MS_PER_S, velMsPerS));
+	}
+
+	void reset()
+	{
+		estMs = velMsPerS = 0.0;
+		initialized  = false;
+		lastUpdateMs = 0;
+	}
 };
 
 // ============================================================================
@@ -463,8 +569,11 @@ private:
 
 	AudioFallbackState audFallback;
 	FusionState        fusion;
-	double  activeDelayMs    = 0.0;   // offset currently programmed into the delay engine
-	int64_t anchorTimestampMs = 0;    // juce::Time::currentTimeMillis() when anchor last set
+	AlphaBetaState     ab;
+	FusionState::Source prevFusionSource = FusionState::Source::None;
+	double  activeDelayMs     = 0.0;   // offset currently programmed into the delay engine
+	int64_t anchorTimestampMs = 0;     // juce::Time::currentTimeMillis() when anchor last set
+	int64_t masterNovAnchorSample = 0; // abs sample pos when master last wrote novelty to SM
 	static constexpr double ANCHOR_MAX_AGE_MS = 30000.0;  // anchor valid for 30 s after LTC loss
 
 	// Monotonically increasing sample counter, reset on prepareToPlay.

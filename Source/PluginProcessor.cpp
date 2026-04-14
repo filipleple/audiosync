@@ -344,6 +344,8 @@ void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
 	currentSampleRate = sampleRate;
 	totalSamplesProcessed = 0;
 	audFallback.init(sampleRate);
+	ab.reset();
+	prevFusionSource = FusionState::Source::None;
 
 	// Open (or re-open) the shared memory region for this group.
 	// SharedGroupMemory::open() calls close() internally, so re-entrant calls are safe.
@@ -415,8 +417,11 @@ void NewProjectAudioProcessor::pushAudioAnalysisSample(float ch1, float ch2)
 	if (audFallback.novelty1.empty())
 		return;
 
-	audFallback.energyAcc1 += ch1 * ch1;
-	audFallback.energyAcc2 += ch2 * ch2;
+	// HPF: strip DC and sub-100 Hz content before accumulating energy
+	const float h1 = audFallback.applyHPF(ch1, audFallback.hpfPrevX1, audFallback.hpfPrevY1);
+	const float h2 = audFallback.applyHPF(ch2, audFallback.hpfPrevX2, audFallback.hpfPrevY2);
+	audFallback.energyAcc1 += h1 * h1;
+	audFallback.energyAcc2 += h2 * h2;
 
 	if (++audFallback.hopSampleCounter < audFallback.hopSamples)
 		return;
@@ -424,6 +429,29 @@ void NewProjectAudioProcessor::pushAudioAnalysisSample(float ch1, float ch2)
 	// Hop boundary: compute novelty = positive energy increase
 	float e1 = audFallback.energyAcc1 / (float)audFallback.hopSamples;
 	float e2 = audFallback.energyAcc2 / (float)audFallback.hopSamples;
+
+	// Asymmetric noise-floor follower + activity gate.
+	// Fall is fast so the floor drops within ~150 ms after a loud signal (LTC) stops,
+	// allowing quieter speech to open the gate quickly.
+	// ch2 is only updated when it actually carries signal (non-zero after HPF).
+	{
+		const float tc1 = (e1 < audFallback.noiseFloor1)
+		                ? AudioFallbackState::NOISE_FLOOR_TC_FALL
+		                : AudioFallbackState::NOISE_FLOOR_TC_RISE;
+		audFallback.noiseFloor1 = tc1 * audFallback.noiseFloor1 + (1.0f - tc1) * e1;
+	}
+	if (e2 > 1e-12f)
+	{
+		const float tc2 = (e2 < audFallback.noiseFloor2)
+		                ? AudioFallbackState::NOISE_FLOOR_TC_FALL
+		                : AudioFallbackState::NOISE_FLOOR_TC_RISE;
+		audFallback.noiseFloor2 = tc2 * audFallback.noiseFloor2 + (1.0f - tc2) * e2;
+	}
+
+	const float dbThresh  = std::pow(10.0f, AudioFallbackState::ACTIVITY_GATE_DB / 10.0f);
+	const bool  ch1Active = e1 > audFallback.noiseFloor1 * dbThresh;
+	const bool  ch2Active = (e2 > 1e-12f) && (e2 > audFallback.noiseFloor2 * dbThresh);
+	audFallback.activityGate = ch1Active || ch2Active;
 
 	float nov1 = std::max(0.0f, e1 - audFallback.prevEnergy1);
 	float nov2 = std::max(0.0f, e2 - audFallback.prevEnergy2);
@@ -453,82 +481,142 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 	if (audFallback.framesFilled < audFallback.windowFrames)
 		return;
 
+	// Activity gate: no informative audio → skip NCC, let alpha-beta coast.
+	if (!audFallback.activityGate)
+		return;
+
 	const int N = audFallback.windowFrames;
 
 	// ------------------------------------------------------------------
-	// Choose search mode.
+	// Search mode selection and SM staleness correction.
 	//
-	// Anchored: LTC confirmed the offset recently and the anchor fits
-	// inside the window.  Pre-shift masterNoveltyRef by anchorHops so the
-	// correlation peak lands near relative lag 0; search only ±NARROW_HALF
-	// hops (±300 ms).  Every lag in that range has ≥170 overlapping frames
-	// vs. as few as 50 in the old wide search.
+	// Anchored: LTC recently confirmed the offset (anchor) and it fits in
+	// the window.  Pre-shift masterNoveltyRef by K_eff so the NCC peak
+	// lands near relLag=0; search only ±NARROW_HALF hops (±300 ms).
 	//
-	// Wide (fallback): no anchor or anchor too large for the window.
-	// Behaviour identical to the previous implementation.
+	// Wide (fallback): no valid anchor — search ±lagRange hops (±2 s).
+	//
+	// Staleness: master writes novelty ~every 100 ms; slave reads it on
+	// its own independent 100 ms timer → up to 200 ms offset.  Corrected
+	// by K_eff = anchorHops − timeDeltaHops so master and slave frames
+	// align to the same DAW timeline before the NCC runs.
 	// ------------------------------------------------------------------
+	// Compute staleness correction: master's novelty buffer may be up to
+	// ~200 ms old when we read it (two async 0.1 s timers).  Correct by
+	// shifting masterNoveltyRef forward by timeDeltaHops when building
+	// linBuf2, so master and slave frames align to the same DAW time.
+	// ------------------------------------------------------------------
+	int timeDeltaHops = 0;
+	if (masterNovAnchorSample > 0)
+	{
+		const int64_t deltaSamples = totalSamplesProcessed - masterNovAnchorSample;
+		timeDeltaHops = (int)std::round((double)deltaSamples / (double)audFallback.hopSamples);
+		// Clamp: staleness should be 0–200 ms; anything larger is noise.
+		timeDeltaHops = std::max(0, std::min(timeDeltaHops, N / 8));
+	}
+
+	// Effective anchor for linBuf2 pre-shift: subtract staleness so the
+	// corrected master reference aligns with the slave's current window.
+	const int K_eff = audFallback.anchorHops - timeDeltaHops;
+
+	// anchorAgeOk: we have a recent LTC-confirmed anchor.
+	const bool anchorAgeOk =
+		audFallback.hasAnchor
+		&& (juce::Time::currentTimeMillis() - anchorTimestampMs) < (int64_t)ANCHOR_MAX_AGE_MS;
+
+	// anchorUsable: age ok AND K_eff fits inside the window so the narrow
+	// ±NARROW_HALF search covers the expected peak with adequate overlap.
+	// With N=400, this supports offsets up to ±369 hops = ±3.69 s.
 	const bool anchorUsable =
-		audFallback.hasMasterRef
-		&& audFallback.hasAnchor
-		&& (juce::Time::currentTimeMillis() - anchorTimestampMs) < (int64_t)ANCHOR_MAX_AGE_MS
-		&& std::abs(audFallback.anchorHops) < N - AudioFallbackState::NARROW_HALF - 1;
+		anchorAgeOk
+		&& audFallback.hasMasterRef
+		&& std::abs(K_eff) < N - AudioFallbackState::NARROW_HALF - 1;
+
+	// If the anchor is recent but even K_eff is too large for the window
+	// (offset > 3.69 s), hold the LTC value rather than running a wide NCC
+	// that can't reach the true peak.
+	if (anchorAgeOk && !anchorUsable)
+	{
+		audFallback.deltaAudMs = audFallback.anchorMs;
+		audFallback.confAud    = 0.8;
+		audFallback.peakCorr   = 0.0;
+		audFallback.valid      = true;
+		return;
+	}
 
 	audFallback.lastEstimateAnchored = anchorUsable;
 
 	// ------------------------------------------------------------------
-	// Linearise novelty1 (slave, circular, always the same).
+	// Effective NCC window.
+	//
+	// In anchored mode: use only the most recent ANCHORED_WIN frames (1.2 s)
+	// so the estimator reacts within ~1.2 s after a manual track shift.
+	// The full 4-second buffer is still used for data storage; we just
+	// read a shorter tail from it.
+	//
+	// In wide mode: use the full N frames for ±2 s initial acquisition.
+	//
+	// startOff: how many frames from the circular-buffer "oldest" pointer
+	// to skip, so that [startOff, startOff+nccN) are the most-recent nccN frames.
 	// ------------------------------------------------------------------
-	for (int i = 0; i < N; ++i)
+	const int nccN    = anchorUsable ? AudioFallbackState::ANCHORED_WIN : N;
+	const int startOff = N - nccN;
+
+	// ------------------------------------------------------------------
+	// Linearise novelty1 (slave, circular, most-recent nccN frames).
+	// ------------------------------------------------------------------
+	for (int i = 0; i < nccN; ++i)
 	{
-		int src = (audFallback.writePos + i) % N;
+		int src = (audFallback.writePos + startOff + i) % N;
 		audFallback.linBuf1[i] = audFallback.novelty1[src];
 	}
 
 	// ------------------------------------------------------------------
 	// Linearise novelty2 / build reference for linBuf2.
 	//
-	// Anchored: pre-shift masterNoveltyRef right by anchorHops.
-	//   linBuf2[i] = masterNoveltyRef[(i − K + 4N) % N]
-	// This rotation aligns master and slave so that a residual lag of 0
-	// means "offset equals anchorMs exactly".
+	// Anchored: pre-shift masterNoveltyRef by -K_eff so that the NCC peak
+	// lands at relLag=0 when the true offset equals anchorMs.
+	// masterNoveltyRef is already a linearised (oldest→newest) copy from SM;
+	// index it as masterNoveltyRef[(startOff + i - K_eff + N*8) % N] to
+	// grab the same time-slice as linBuf1 but aligned by K_eff.
 	//
-	// Wide: use masterNoveltyRef unshifted (or novelty2 if SM not yet up).
+	// Wide: use masterNoveltyRef unshifted (or novelty2 if SM not yet up),
+	// corrected for SM staleness by timeDeltaHops.
 	// ------------------------------------------------------------------
 	if (anchorUsable)
 	{
-		const int K = audFallback.anchorHops;
-		for (int i = 0; i < N; ++i)
-			audFallback.linBuf2[i] = audFallback.masterNoveltyRef[(i - K + N * 4) % N];
+		for (int i = 0; i < nccN; ++i)
+			audFallback.linBuf2[i] = audFallback.masterNoveltyRef[(startOff + i - K_eff + N * 8) % N];
 	}
 	else
 	{
-		for (int i = 0; i < N; ++i)
+		for (int i = 0; i < nccN; ++i)
 		{
-			int src = (audFallback.writePos + i) % N;
+			int src = (audFallback.writePos + startOff + i) % N;
 			audFallback.linBuf2[i] = audFallback.hasMasterRef
-			                       ? audFallback.masterNoveltyRef[i]
+			                       ? audFallback.masterNoveltyRef[(startOff + i + timeDeltaHops + N * 8) % N]
 			                       : audFallback.novelty2[src];
 		}
 	}
 
 	// ------------------------------------------------------------------
-	// Means + std devs
+	// Means + std devs (over nccN frames)
 	// ------------------------------------------------------------------
 	float m1 = 0.0f, m2 = 0.0f;
-	for (int i = 0; i < N; ++i) { m1 += audFallback.linBuf1[i]; m2 += audFallback.linBuf2[i]; }
-	m1 /= (float)N;
-	m2 /= (float)N;
+	for (int i = 0; i < nccN; ++i) { m1 += audFallback.linBuf1[i]; m2 += audFallback.linBuf2[i]; }
+	m1 /= (float)nccN;
+	m2 /= (float)nccN;
 
 	float s1 = 0.0f, s2 = 0.0f;
-	for (int i = 0; i < N; ++i)
+	for (int i = 0; i < nccN; ++i)
 	{
 		float d1 = audFallback.linBuf1[i] - m1;
 		float d2 = audFallback.linBuf2[i] - m2;
 		s1 += d1 * d1;
 		s2 += d2 * d2;
 	}
-	s1 = std::sqrt(s1 / (float)N);
-	s2 = std::sqrt(s2 / (float)N);
+	s1 = std::sqrt(s1 / (float)nccN);
+	s2 = std::sqrt(s2 / (float)nccN);
 
 	if (s1 < 1e-6f || s2 < 1e-6f)
 	{
@@ -539,16 +627,16 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 
 	// ------------------------------------------------------------------
 	// NCC helper — computes correlation at one lag value.
-	// linBuf1/linBuf2, m1/m2, s1/s2, N captured by reference.
+	// linBuf1/linBuf2, m1/m2, s1/s2, nccN captured by reference.
 	// ------------------------------------------------------------------
 	auto nccAt = [&](int lag) -> double
 	{
 		double sum = 0.0;
 		int    cnt = 0;
-		for (int i = 0; i < N; ++i)
+		for (int i = 0; i < nccN; ++i)
 		{
 			int j = i + lag;
-			if (j >= 0 && j < N)
+			if (j >= 0 && j < nccN)
 			{
 				sum += (double)(audFallback.linBuf1[i] - m1)
 				     * (double)(audFallback.linBuf2[j] - m2);
@@ -604,13 +692,15 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 	// ------------------------------------------------------------------
 	// Convert relative lag → absolute lag → milliseconds.
 	//
-	// Anchored: relative lag 0 corresponds to anchorHops (the confirmed
-	// LTC offset), so absolute = relLag − anchorHops.
+	// Anchored: linBuf2 was pre-shifted by -K_eff = -(anchorHops - timeDeltaHops).
+	// A residual relLag=0 means "offset = anchorHops exactly (after staleness
+	// correction)".  The output is expressed in terms of uncorrected anchorHops:
+	//   absoluteLag = relLag - anchorHops
 	//
-	// Wide: relative == absolute (no shift was applied).
+	// Wide: no shift — relative == absolute.
 	//
-	// Sign convention (preserved from original):
-	//   bestLag < 0  →  master leads slave  →  deltaAudMs > 0  (slave is delayed)
+	// Sign convention: absoluteLag > 0 → slave is early → deltaAudMs < 0.
+	//                  absoluteLag < 0 → slave is late  → deltaAudMs > 0.
 	// ------------------------------------------------------------------
 	const int absoluteBestLag = anchorUsable
 		? (bestRelLag - audFallback.anchorHops)
@@ -697,6 +787,47 @@ void NewProjectAudioProcessor::fuseLtcAndAudioFallback()
 			fusion.fallbackActive = false;
 		}
 	}
+
+	// ------------------------------------------------------------------
+	// Alpha-beta tracker — updated every NCC refresh cycle (~200 ms).
+	//
+	// While LTC is healthy the tracker is kept synchronised to d_ms so it
+	// is ready to coast the moment LTC drops.  When the audio fallback is
+	// active the tracker absorbs the NCC measurement; when both sources
+	// abstain it extrapolates on the last velocity estimate.
+	//
+	// Large-jump fast path: if the NCC has found a new stable offset more
+	// than 150 ms from the current estimate (e.g. after a manual track
+	// shift in the DAW), seed directly rather than waiting for the alpha
+	// term to slowly converge over many seconds.
+	// ------------------------------------------------------------------
+	if (fusion.source == FusionState::Source::AudioFallback
+	    && audFallback.valid
+	    && ab.initialized
+	    && std::abs(audFallback.deltaAudMs - ab.estMs) > 150.0)
+	{
+		ab.seed(audFallback.deltaAudMs);
+	}
+
+	if (!ab.initialized && fusion.source != FusionState::Source::None)
+		ab.seed(audFallback.anchorMs);  // prime from the last confirmed LTC value
+
+	if (ab.initialized)
+	{
+		const bool feedMeasured = (fusion.source == FusionState::Source::AudioFallback)
+		                       && audFallback.valid;
+		ab.update(audFallback.deltaAudMs, feedMeasured);
+
+		// Resync to LTC while it is driving so the first coast after dropout
+		// starts from the freshest reliable value with zero initial velocity.
+		if (fusion.source == FusionState::Source::LTC)
+		{
+			ab.estMs        = d_ms;
+			ab.velMsPerS    = 0.0;
+			ab.lastUpdateMs = juce::Time::currentTimeMillis();
+		}
+	}
+	prevFusionSource = fusion.source;
 }
 
 void NewProjectAudioProcessor::writeMasterSlot()
@@ -709,17 +840,18 @@ void NewProjectAudioProcessor::writeMasterSlot()
 	                    + (int64_t)chnl1_in.scnds  * 1000LL
 	                    + (int64_t)chnl1_in.frms   * 1000LL / std::max(1, fps);
 
-	const int N = audFallback.windowFrames;   // 200
+	const int N = audFallback.windowFrames;   // 400 at runtime (set by init())
 
 	seqcount_write_begin(m.writeSeq);
 
 	m.tc_ref_ms           = tc_ms;
 	m.ref_decode_sample   = chnl1_in.last_decode_sample;
+	m.nov_anchor_sample   = totalSamplesProcessed;  // abs sample pos at this write
 	m.Q_ref               = chnl1_in.Q_LTC;
-	m.ltc_state        = (uint8_t)chnl1_in.ltc_state;
-	m.valid            = (audFallback.framesFilled >= N);
-	m.nov_writePos     = audFallback.writePos;
-	m.nov_framesFilled = audFallback.framesFilled;
+	m.ltc_state           = (uint8_t)chnl1_in.ltc_state;
+	m.valid               = (audFallback.framesFilled >= N);
+	m.nov_writePos        = audFallback.writePos;
+	m.nov_framesFilled    = audFallback.framesFilled;
 
 	// Copy the full novelty1 circular buffer verbatim; the slave uses
 	// nov_writePos to know where the oldest frame sits.
@@ -781,8 +913,11 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex, bufferStartSample + i);
 
 			// Novelty extraction for the reference curve.
-			// ch2 = 0.0f — novelty2 is unused in master mode (removed in Step 11).
-			pushAudioAnalysisSample(ltcSample, 0.0f);
+			// ch2 = non-LTC channel (scene audio when available, else near-silence).
+			// The activity gate in pushAudioAnalysisSample will suppress NCC
+			// updates automatically if ch2 carries no informative content.
+			float sceneSample = (ltcChannel == 0) ? write2[i] : write1[i];
+			pushAudioAnalysisSample(ltcSample, sceneSample);
 
 			// Update diagnostics + write SM every ~0.1 s.
 			// Counter is per-sample (matching the slave path) — do NOT move this outside
@@ -836,20 +971,21 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 		processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex, bufferStartSample + i);
 
 		// Slave novelty1 tracks the same LTC channel as the master reference curve.
-		// Novelty2 is not accumulated here — it is overwritten from master SM
-		// (linearised nov_ref[]) in the 0.1s diagnostic block below.
-		pushAudioAnalysisSample(ltcSample, 0.0f);
+		// ch2 = non-LTC channel (scene audio when available).  The activity gate in
+		// pushAudioAnalysisSample suppresses NCC updates during silence automatically.
+		{
+			float sceneSample = (ltcChannel == 0) ? write2[i] : write1[i];
+			pushAudioAnalysisSample(ltcSample, sceneSample);
+		}
 
 		// Target offset: master-derived d_ms (updated every ~0.1s in timer block below).
-		// If master SM is stale (holding == true) or not yet received, freeze at last
-		// programmed delay rather than snapping to zero.
+		// If master SM is stale or not yet received, the alpha-beta tracker coasts on
+		// its last velocity estimate rather than snapping to zero.
 		double targetMs;
 		if (masterValid)
 			targetMs = d_ms;
-		else if (fusion.fallbackActive && fusion.selectedMs != 0.0)
-			targetMs = fusion.selectedMs;  // audio fallback NCC estimate
-		else if (activeDelayMs != 0.0)
-			targetMs = activeDelayMs;  // hold-last-delay until master comes back
+		else if (ab.initialized)
+			targetMs = ab.estMs;   // smoothed + rate-limited; coasts on velocity when abstaining
 		else
 			targetMs = 0.0;
 
@@ -929,27 +1065,34 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			if (shm.isOpen())
 			{
 				const MasterSlot& m = shm.get()->master;
-				int64_t tc_ref_ms_local        = 0;
-				int64_t ref_decode_sample_local = 0;
-				uint8_t master_ltc_state       = 0;
-				bool    master_valid_local      = false;
-				int     nov_writePos_local      = 0;
-				int     nov_framesFilled_local  = 0;
-				float   nov_ref_local[200]      = {};
+				int64_t tc_ref_ms_local         = 0;
+				int64_t ref_decode_sample_local  = 0;
+				int64_t nov_anchor_sample_local  = 0;
+				uint8_t master_ltc_state         = 0;
+				bool    master_valid_local       = false;
+				int     nov_writePos_local       = 0;
+				int     nov_framesFilled_local   = 0;
+				float   nov_ref_local[400]       = {};
 
 				uint32_t seq1, seq2;
 				do {
 					seq1 = seqcount_read_begin(m.writeSeq);
-					tc_ref_ms_local         = m.tc_ref_ms;
-					ref_decode_sample_local = m.ref_decode_sample;
-					master_ltc_state        = m.ltc_state;
-					master_valid_local      = m.valid;
-					nov_writePos_local      = m.nov_writePos;
-					nov_framesFilled_local  = m.nov_framesFilled;
+					tc_ref_ms_local          = m.tc_ref_ms;
+					ref_decode_sample_local  = m.ref_decode_sample;
+					nov_anchor_sample_local  = m.nov_anchor_sample;
+					master_ltc_state         = m.ltc_state;
+					master_valid_local       = m.valid;
+					nov_writePos_local       = m.nov_writePos;
+					nov_framesFilled_local   = m.nov_framesFilled;
 					for (int ni = 0; ni < audFallback.windowFrames; ++ni)
 						nov_ref_local[ni] = m.nov_ref[ni];
 					seq2 = seqcount_read_end(m.writeSeq);
 				} while (seq1 != seq2);
+
+				// Store master's write timestamp so estimateAudioFallbackOffset()
+				// can correct for the asynchronous SM read latency (~0–200 ms).
+				if (nov_anchor_sample_local > 0)
+					masterNovAnchorSample = nov_anchor_sample_local;
 
 				// Linearise master's circular novelty buffer (oldest→newest) into
 				// audFallback.masterNoveltyRef so that estimateAudioFallbackOffset()
