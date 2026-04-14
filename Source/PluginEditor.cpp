@@ -179,7 +179,7 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
 	};
 	addAndMakeVisible(cfg_label_editor);
 
-	setSize(400, 480);
+	setSize(500, 580);
 	startTimer(1);
 }
 
