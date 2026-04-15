@@ -253,6 +253,23 @@ struct AudioFallbackState
 	int writePos     = 0;
 	int framesFilled = 0;
 
+	// Slave mode: linearised master reference novelty copied from SM every ~0.1s.
+	// When hasMasterRef is true, estimateAudioFallbackOffset() uses this instead
+	// of linearising novelty2, so the NCC compares slave transients vs master transients.
+	std::vector<float> masterNoveltyRef;
+	bool hasMasterRef = false;
+
+	// Anchor: last LTC-confirmed offset used to centre the narrow NCC search.
+	// Set by fuseLtcAndAudioFallback() whenever ltcOk is true.
+	bool   hasAnchor             = false;
+	double anchorMs              = 0.0;
+	int    anchorHops            = 0;     // round(anchorMs / hopMs), cached
+	bool   lastEstimateAnchored  = false; // set by estimateAudioFallbackOffset, read by fuse
+
+	// Half-width of the narrow lag search in hops (±300 ms at 10 ms/hop).
+	// Must satisfy: NARROW_HALF < windowFrames/2 to keep meaningful overlap.
+	static constexpr int NARROW_HALF = 30;
+
 	// Estimation results
 	double deltaAudMs  = 0.0;
 	double confAud     = 0.0;
@@ -274,6 +291,7 @@ struct AudioFallbackState
 		novelty2.assign(windowFrames, 0.0f);
 		linBuf1.assign(windowFrames, 0.0f);
 		linBuf2.assign(windowFrames, 0.0f);
+		masterNoveltyRef.assign(windowFrames, 0.0f);
 		reset();
 	}
 
@@ -286,6 +304,11 @@ struct AudioFallbackState
 		prevBestLag = INT_MAX;
 		stableCount = 0;
 		valid = false;
+		hasMasterRef = false;
+		hasAnchor = false;
+		anchorMs  = 0.0;
+		anchorHops = 0;
+		lastEstimateAnchored = false;
 	}
 };
 
@@ -440,7 +463,9 @@ private:
 
 	AudioFallbackState audFallback;
 	FusionState        fusion;
-	double activeDelayMs = 0.0;  // offset currently programmed into the delay engine
+	double  activeDelayMs    = 0.0;   // offset currently programmed into the delay engine
+	int64_t anchorTimestampMs = 0;    // juce::Time::currentTimeMillis() when anchor last set
+	static constexpr double ANCHOR_MAX_AGE_MS = 30000.0;  // anchor valid for 30 s after LTC loss
 
 	// Monotonically increasing sample counter, reset on prepareToPlay.
 	// Used as the absolute sample position passed to handleTimecode so that

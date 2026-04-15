@@ -31,7 +31,7 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
 	addAndMakeVisible(delay_slider);
 	delay_slider.setNumDecimalPlacesToDisplay(0);
 	delay_slider.setRange(-1500, 1500);
-	delay_slider.setValue(0);
+	delay_slider.setValue(audioProcessor.by_slider, juce::dontSendNotification);
 	delay_slider.setMouseDragSensitivity(1);
 	delay_slider.setTextValueSuffix("ms");
 
@@ -65,14 +65,14 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
 
 		};
 	//fps label
-	fps_label.setText("30FPS", juce::dontSendNotification);
+	fps_label.setText(audioProcessor.fps == 25 ? "25FPS" : "30FPS", juce::dontSendNotification);
 	addAndMakeVisible(fps_label);
 
 
 	//fps box
 	fps_box.addItem("30FPS", 1);
 	fps_box.addItem("25FPS", 2);
-	fps_box.setSelectedId(1);
+	fps_box.setSelectedId(audioProcessor.fps == 25 ? 2 : 1, juce::dontSendNotification);
 
 	fps_box.onChange = [&]()
 		{

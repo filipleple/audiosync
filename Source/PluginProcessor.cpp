@@ -454,23 +454,71 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 		return;
 
 	const int N = audFallback.windowFrames;
-	const int L = audFallback.lagRange;
 
-	// Linearise circular buffers into pre-allocated scratch
+	// ------------------------------------------------------------------
+	// Choose search mode.
+	//
+	// Anchored: LTC confirmed the offset recently and the anchor fits
+	// inside the window.  Pre-shift masterNoveltyRef by anchorHops so the
+	// correlation peak lands near relative lag 0; search only ±NARROW_HALF
+	// hops (±300 ms).  Every lag in that range has ≥170 overlapping frames
+	// vs. as few as 50 in the old wide search.
+	//
+	// Wide (fallback): no anchor or anchor too large for the window.
+	// Behaviour identical to the previous implementation.
+	// ------------------------------------------------------------------
+	const bool anchorUsable =
+		audFallback.hasMasterRef
+		&& audFallback.hasAnchor
+		&& (juce::Time::currentTimeMillis() - anchorTimestampMs) < (int64_t)ANCHOR_MAX_AGE_MS
+		&& std::abs(audFallback.anchorHops) < N - AudioFallbackState::NARROW_HALF - 1;
+
+	audFallback.lastEstimateAnchored = anchorUsable;
+
+	// ------------------------------------------------------------------
+	// Linearise novelty1 (slave, circular, always the same).
+	// ------------------------------------------------------------------
 	for (int i = 0; i < N; ++i)
 	{
 		int src = (audFallback.writePos + i) % N;
 		audFallback.linBuf1[i] = audFallback.novelty1[src];
-		audFallback.linBuf2[i] = audFallback.novelty2[src];
 	}
 
-	// Means
+	// ------------------------------------------------------------------
+	// Linearise novelty2 / build reference for linBuf2.
+	//
+	// Anchored: pre-shift masterNoveltyRef right by anchorHops.
+	//   linBuf2[i] = masterNoveltyRef[(i − K + 4N) % N]
+	// This rotation aligns master and slave so that a residual lag of 0
+	// means "offset equals anchorMs exactly".
+	//
+	// Wide: use masterNoveltyRef unshifted (or novelty2 if SM not yet up).
+	// ------------------------------------------------------------------
+	if (anchorUsable)
+	{
+		const int K = audFallback.anchorHops;
+		for (int i = 0; i < N; ++i)
+			audFallback.linBuf2[i] = audFallback.masterNoveltyRef[(i - K + N * 4) % N];
+	}
+	else
+	{
+		for (int i = 0; i < N; ++i)
+		{
+			int src = (audFallback.writePos + i) % N;
+			audFallback.linBuf2[i] = audFallback.hasMasterRef
+			                       ? audFallback.masterNoveltyRef[i]
+			                       : audFallback.novelty2[src];
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// Means + std devs
+	// ------------------------------------------------------------------
 	float m1 = 0.0f, m2 = 0.0f;
 	for (int i = 0; i < N; ++i) { m1 += audFallback.linBuf1[i]; m2 += audFallback.linBuf2[i]; }
 	m1 /= (float)N;
 	m2 /= (float)N;
 
-	// Std devs
 	float s1 = 0.0f, s2 = 0.0f;
 	for (int i = 0; i < N; ++i)
 	{
@@ -484,16 +532,16 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 
 	if (s1 < 1e-6f || s2 < 1e-6f)
 	{
-		audFallback.valid      = false;
+		audFallback.valid       = false;
 		audFallback.stableCount = 0;
 		return;
 	}
 
-	double bestCorr   = -2.0;
-	double secondBest = -2.0;
-	int    bestLag    = 0;
-
-	for (int lag = -L; lag <= L; ++lag)
+	// ------------------------------------------------------------------
+	// NCC helper — computes correlation at one lag value.
+	// linBuf1/linBuf2, m1/m2, s1/s2, N captured by reference.
+	// ------------------------------------------------------------------
+	auto nccAt = [&](int lag) -> double
 	{
 		double sum = 0.0;
 		int    cnt = 0;
@@ -502,16 +550,34 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 			int j = i + lag;
 			if (j >= 0 && j < N)
 			{
-				sum += (double)(audFallback.linBuf1[i] - m1) * (double)(audFallback.linBuf2[j] - m2);
+				sum += (double)(audFallback.linBuf1[i] - m1)
+				     * (double)(audFallback.linBuf2[j] - m2);
 				++cnt;
 			}
 		}
-		double corr = cnt > 0 ? sum / ((double)cnt * (double)s1 * (double)s2) : 0.0;
+		return cnt > 0 ? sum / ((double)cnt * (double)s1 * (double)s2) : 0.0;
+	};
+
+	// ------------------------------------------------------------------
+	// NCC search over the chosen range.
+	// In anchored mode the search is relative to the pre-shifted linBuf2,
+	// so bestRelLag ≈ 0 when the actual offset equals anchorMs.
+	// ------------------------------------------------------------------
+	const int searchHalf = anchorUsable ? AudioFallbackState::NARROW_HALF
+	                                    : audFallback.lagRange;
+
+	double bestCorr   = -2.0;
+	double secondBest = -2.0;
+	int    bestRelLag = 0;
+
+	for (int lag = -searchHalf; lag <= searchHalf; ++lag)
+	{
+		double corr = nccAt(lag);
 		if (corr > bestCorr)
 		{
 			secondBest = bestCorr;
 			bestCorr   = corr;
-			bestLag    = lag;
+			bestRelLag = lag;
 		}
 		else if (corr > secondBest)
 		{
@@ -519,54 +585,117 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 		}
 	}
 
+	// ------------------------------------------------------------------
+	// Sub-hop parabola interpolation — sharpens accuracy from ±10 ms to
+	// roughly ±2 ms at no extra window cost.
+	// Only applied when the peak is not at the search boundary.
+	// ------------------------------------------------------------------
+	double subHopOffset = 0.0;
+	if (bestRelLag > -searchHalf && bestRelLag < searchHalf)
+	{
+		double y0    = nccAt(bestRelLag - 1);
+		double y1    = bestCorr;
+		double y2    = nccAt(bestRelLag + 1);
+		double denom = y2 - 2.0 * y1 + y0;
+		if (std::abs(denom) > 1e-9)
+			subHopOffset = std::max(-0.5, std::min(0.5, -0.5 * (y2 - y0) / denom));
+	}
+
+	// ------------------------------------------------------------------
+	// Convert relative lag → absolute lag → milliseconds.
+	//
+	// Anchored: relative lag 0 corresponds to anchorHops (the confirmed
+	// LTC offset), so absolute = relLag − anchorHops.
+	//
+	// Wide: relative == absolute (no shift was applied).
+	//
+	// Sign convention (preserved from original):
+	//   bestLag < 0  →  master leads slave  →  deltaAudMs > 0  (slave is delayed)
+	// ------------------------------------------------------------------
+	const int absoluteBestLag = anchorUsable
+		? (bestRelLag - audFallback.anchorHops)
+		: bestRelLag;
+
+	const double absoluteLagSub = anchorUsable
+		? ((double)bestRelLag + subHopOffset - (double)audFallback.anchorHops)
+		: ((double)bestRelLag + subHopOffset);
+
+	// ------------------------------------------------------------------
+	// Confidence + stability
+	// ------------------------------------------------------------------
 	double prominence = (bestCorr > 0.0)
 		? std::min(1.0, (bestCorr - std::max(0.0, secondBest)) / (bestCorr + 1e-9))
 		: 0.0;
 
-	bool stable = (audFallback.prevBestLag != INT_MAX &&
-	               std::abs(bestLag - audFallback.prevBestLag) <= 2);
+	bool stable = (audFallback.prevBestLag != INT_MAX
+	            && std::abs(absoluteBestLag - audFallback.prevBestLag) <= 2);
 	if (stable) ++audFallback.stableCount;
 	else         audFallback.stableCount = 0;
 
-	double stability = std::min(1.0, audFallback.stableCount / 3.0);
+	// Anchored estimates converge faster: only 2 stable hits needed vs 3.
+	const double stabDivisor = anchorUsable ? 2.0 : 3.0;
+	double stability = std::min(1.0, audFallback.stableCount / stabDivisor);
 
-	audFallback.confAud     = std::max(0.0, std::min(1.0, 0.6 * prominence + 0.4 * stability));
-	// Negate: bestLag < 0 means novelty2 leads novelty1, i.e. CH2 is ahead.
-	// LTC convention: d_ms > 0 when CH2 is ahead of CH1. Match that.
-	audFallback.deltaAudMs  = -(double)bestLag * audFallback.hopMs;
-	audFallback.bestLag     = bestLag;
-	audFallback.peakCorr    = bestCorr;
-	audFallback.secondPeak  = secondBest;
-	audFallback.prevBestLag = bestLag;
-	audFallback.valid       = (audFallback.stableCount >= 3 && audFallback.confAud > 0.3);
+	const int    stabThresh  = anchorUsable ? 2   : 3;
+	const double confThresh  = anchorUsable ? 0.25 : 0.3;
+
+	audFallback.confAud    = std::max(0.0, std::min(1.0, 0.6 * prominence + 0.4 * stability));
+	audFallback.deltaAudMs = -absoluteLagSub * audFallback.hopMs;
+	audFallback.bestLag    = absoluteBestLag;
+	audFallback.peakCorr   = bestCorr;
+	audFallback.secondPeak = secondBest;
+	audFallback.prevBestLag = absoluteBestLag;
+	audFallback.valid      = (audFallback.stableCount >= stabThresh
+	                       && audFallback.confAud > confThresh);
 }
 
 void NewProjectAudioProcessor::fuseLtcAndAudioFallback()
 {
-	bool ltcOk = (chnl1_in.ltc_state == tc_data::LTCState::VALID &&
-	              chnl2_in.ltc_state == tc_data::LTCState::VALID &&
-	              !drift_suspected);
+	// In slave mode only chnl1_in is decoded; chnl2_in is never updated and
+	// would permanently report FAIL, so we use masterValid + chnl1_in state
+	// instead of the old dual-channel check from the stereo-pair architecture.
+	bool ltcOk;
+	if (pluginMode == PluginMode::Master)
+		ltcOk = true;  // master is the reference; fusion result is not used for delay
+	else
+		ltcOk = masterValid
+		     && (chnl1_in.ltc_state == tc_data::LTCState::VALID)
+		     && !drift_suspected;
 
 	if (ltcOk)
 	{
+		// Keep the anchor up to date while LTC is healthy so it is ready
+		// the moment LTC degrades.
+		audFallback.anchorMs   = d_ms;
+		audFallback.anchorHops = (int)std::round(d_ms / audFallback.hopMs);
+		audFallback.hasAnchor  = true;
+		anchorTimestampMs      = juce::Time::currentTimeMillis();
+
 		fusion.source         = FusionState::Source::LTC;
 		fusion.selectedMs     = d_ms;
-		fusion.selectedConf   = (double)std::min(chnl1_in.Q_LTC, chnl2_in.Q_LTC);
+		fusion.selectedConf   = (double)chnl1_in.Q_LTC;
 		fusion.fallbackActive = false;
-	}
-	else if (audFallback.valid && audFallback.confAud > 0.4)
-	{
-		fusion.source         = FusionState::Source::AudioFallback;
-		fusion.selectedMs     = audFallback.deltaAudMs;
-		fusion.selectedConf   = audFallback.confAud;
-		fusion.fallbackActive = true;
 	}
 	else
 	{
-		fusion.source         = FusionState::Source::None;
-		fusion.selectedMs     = 0.0;
-		fusion.selectedConf   = 0.0;
-		fusion.fallbackActive = false;
+		// Use a tighter confidence threshold when the estimator ran in anchored
+		// mode: the narrow search window produces fewer false peaks.
+		const double confThresh = audFallback.lastEstimateAnchored ? 0.25 : 0.4;
+
+		if (audFallback.valid && audFallback.confAud > confThresh)
+		{
+			fusion.source         = FusionState::Source::AudioFallback;
+			fusion.selectedMs     = audFallback.deltaAudMs;
+			fusion.selectedConf   = audFallback.confAud;
+			fusion.fallbackActive = true;
+		}
+		else
+		{
+			fusion.source         = FusionState::Source::None;
+			fusion.selectedMs     = 0.0;
+			fusion.selectedConf   = 0.0;
+			fusion.fallbackActive = false;
+		}
 	}
 }
 
@@ -706,8 +835,10 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 		float ltcSample = (ltcChannel == 0) ? write1[i] : write2[i];
 		processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex, bufferStartSample + i);
 
-		// Both channels fed to novelty extractor for Step 6 audio fallback NCC
-		pushAudioAnalysisSample(write1[i], write2[i]);
+		// Slave novelty1 tracks the same LTC channel as the master reference curve.
+		// Novelty2 is not accumulated here — it is overwritten from master SM
+		// (linearised nov_ref[]) in the 0.1s diagnostic block below.
+		pushAudioAnalysisSample(ltcSample, 0.0f);
 
 		// Target offset: master-derived d_ms (updated every ~0.1s in timer block below).
 		// If master SM is stale (holding == true) or not yet received, freeze at last
@@ -715,6 +846,8 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 		double targetMs;
 		if (masterValid)
 			targetMs = d_ms;
+		else if (fusion.fallbackActive && fusion.selectedMs != 0.0)
+			targetMs = fusion.selectedMs;  // audio fallback NCC estimate
 		else if (activeDelayMs != 0.0)
 			targetMs = activeDelayMs;  // hold-last-delay until master comes back
 		else
@@ -786,20 +919,23 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 			ch1_rejected_frames = chnl1_in.rejected_frames_count;
 			fallback_requested  = chnl1_in.fallback_requested;
 
-			// Audio fallback snapshot (Step 6 will wire NCC against master reference)
+			// Audio fallback snapshot
 			aud_deltaMs       = audFallback.deltaAudMs;
 			aud_conf          = audFallback.confAud;
-			aud_fusionSource  = 0;
+			aud_fusionSource  = (int)fusion.source;
 			aud_activeDelayMs = activeDelayMs;
 
 			// Read master SM; compute dt_ltc_ms = tc_self_ms − tc_ref_ms
 			if (shm.isOpen())
 			{
 				const MasterSlot& m = shm.get()->master;
-				int64_t tc_ref_ms_local       = 0;
+				int64_t tc_ref_ms_local        = 0;
 				int64_t ref_decode_sample_local = 0;
-				uint8_t master_ltc_state      = 0;
-				bool    master_valid_local    = false;
+				uint8_t master_ltc_state       = 0;
+				bool    master_valid_local      = false;
+				int     nov_writePos_local      = 0;
+				int     nov_framesFilled_local  = 0;
+				float   nov_ref_local[200]      = {};
 
 				uint32_t seq1, seq2;
 				do {
@@ -808,8 +944,23 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 					ref_decode_sample_local = m.ref_decode_sample;
 					master_ltc_state        = m.ltc_state;
 					master_valid_local      = m.valid;
+					nov_writePos_local      = m.nov_writePos;
+					nov_framesFilled_local  = m.nov_framesFilled;
+					for (int ni = 0; ni < audFallback.windowFrames; ++ni)
+						nov_ref_local[ni] = m.nov_ref[ni];
 					seq2 = seqcount_read_end(m.writeSeq);
 				} while (seq1 != seq2);
+
+				// Linearise master's circular novelty buffer (oldest→newest) into
+				// audFallback.masterNoveltyRef so that estimateAudioFallbackOffset()
+				// can cross-correlate slave transients against master transients.
+				if (nov_framesFilled_local >= audFallback.windowFrames)
+				{
+					const int N = audFallback.windowFrames;
+					for (int ni = 0; ni < N; ++ni)
+						audFallback.masterNoveltyRef[ni] = nov_ref_local[(nov_writePos_local + ni) % N];
+					audFallback.hasMasterRef = true;
+				}
 
 				const int64_t tc_self_ms_local =
 					  (int64_t)chnl1_in.hrs   * 3600000LL
@@ -883,11 +1034,14 @@ juce::AudioProcessorEditor* NewProjectAudioProcessor::createEditor()
 void NewProjectAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
 	juce::XmlElement xml("AutosyncState");
-	xml.setAttribute("mode",    (int)pluginMode);
-	xml.setAttribute("group",   groupName);
-	xml.setAttribute("slot",    slotId);
-	xml.setAttribute("ltcch",   ltcChannel);
-	xml.setAttribute("label",   slotLabel);
+	xml.setAttribute("mode",         (int)pluginMode);
+	xml.setAttribute("group",        groupName);
+	xml.setAttribute("slot",         slotId);
+	xml.setAttribute("ltcch",        ltcChannel);
+	xml.setAttribute("label",        slotLabel);
+	xml.setAttribute("fps",          fps);
+	xml.setAttribute("active_delay", active_delay ? 1 : 0);
+	xml.setAttribute("by_slider",    by_slider);
 	copyXmlToBinary(xml, destData);
 }
 
@@ -897,11 +1051,14 @@ void NewProjectAudioProcessor::setStateInformation(const void* data, int sizeInB
 	if (xml == nullptr || !xml->hasTagName("AutosyncState"))
 		return;
 
-	pluginMode = (PluginMode)xml->getIntAttribute("mode",  (int)PluginMode::Slave);
-	groupName  = xml->getStringAttribute("group", "group1");
-	slotId     = juce::jlimit(1, 8, xml->getIntAttribute("slot",  1));
-	ltcChannel = juce::jlimit(0, 1, xml->getIntAttribute("ltcch", 0));
-	slotLabel  = xml->getStringAttribute("label", "");
+	pluginMode   = (PluginMode)xml->getIntAttribute("mode",  (int)PluginMode::Slave);
+	groupName    = xml->getStringAttribute("group", "group1");
+	slotId       = juce::jlimit(1, 8, xml->getIntAttribute("slot",  1));
+	ltcChannel   = juce::jlimit(0, 1, xml->getIntAttribute("ltcch", 0));
+	slotLabel    = xml->getStringAttribute("label", "");
+	fps          = xml->getIntAttribute("fps", 30) == 25 ? 25 : 30;
+	active_delay = xml->getIntAttribute("active_delay", 0) != 0;
+	by_slider    = xml->getDoubleAttribute("by_slider", 0.0);
 	// shm will be (re-)opened on the next prepareToPlay call.
 }
 
