@@ -576,6 +576,15 @@ private:
 	int64_t masterNovAnchorSample = 0; // abs sample pos when master last wrote novelty to SM
 	static constexpr double ANCHOR_MAX_AGE_MS = 30000.0;  // anchor valid for 30 s after LTC loss
 
+	// Hysteresis state for d_ms updates in slave SM read.
+	// Large jumps in the computed delay require JUMP_CONFIRMS_NEEDED consecutive
+	// consistent readings before being applied, so a single garbage LTC frame
+	// (e.g. from an abrupt cut) cannot immediately derail the delay engine.
+	double  d_ms_pending       = 0.0;
+	int     d_ms_pending_count = 0;
+	static constexpr double   D_MS_JUMP_THRESH_MS    = 500.0;  // jump magnitude that triggers doubt
+	static constexpr int      D_MS_JUMP_CONFIRMS     = 3;      // consecutive readings needed to accept
+
 	// Monotonically increasing sample counter, reset on prepareToPlay.
 	// Used as the absolute sample position passed to handleTimecode so that
 	// master and slave decode-event positions can be compared sample-accurately.

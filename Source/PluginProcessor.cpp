@@ -59,7 +59,22 @@ inline double calc_delay(tc_data& data1, tc_data& data2, int fps = 30)
 
 	const double delay_ms = (time2_in_frames - time1_in_frames) * 1000 / fps;
 
-	if (data1.timecode_counter > 20 || data2.timecode_counter > 20 && std::abs(delay_ms) > 10000)
+	// Hard sanity cap: no realistic synchronisation scenario requires more than
+	// 1 hour of offset.  BCD validation in handleTimecode should prevent garbage
+	// frames reaching here, but this is a last-resort guard.
+	static constexpr double MAX_SANE_DELAY_MS = 3'600'000.0;
+	if (std::abs(delay_ms) > MAX_SANE_DELAY_MS)
+	{
+		++data2.rejected_frames_count;
+		return 0;
+	}
+
+	// Original code had an operator-precedence bug:
+	//   counter1>20 || counter2>20 && |d|>10000
+	// was parsed as:
+	//   counter1>20 || (counter2>20 && |d|>10000)
+	// so counter1>20 alone bypassed the magnitude check entirely.
+	if ((data1.timecode_counter > 20 || data2.timecode_counter > 20) && std::abs(delay_ms) > 10000)
 	{
 		delay_frames = time2_in_frames - time1_in_frames;
 		return delay_ms;
@@ -107,6 +122,11 @@ inline void handleTimecode(const long double& sample, tc_data& data, const int& 
 		data.gotbit = -1;
 		data.syncstate = 1;
 		data.w_samples_since_trans = 0;
+		// Clear the bit buffer so that partial-frame bits from a cut LTC signal
+		// cannot combine with subsequent speech transitions to form a spurious
+		// sync-word match with invalid timecode values.
+		data.buf.fill(0);
+		data.bufpos = 0;
 	}
 
 	data.threshold = data.threshold * data.threshenv + std::abs(s) * (1 - data.threshenv);
@@ -208,6 +228,18 @@ inline void handleTimecode(const long double& sample, tc_data& data, const int& 
 							data.buf[(data.bufpos + 57) % 80] * 2
 						);
 
+					// BCD range validation: speech or noise bits can satisfy the
+					// sync-word pattern but decode to impossible SMPTE values.
+					// Reject such frames outright; force re-lock so the decoder
+					// does not propagate garbage into the delay engine.
+					const int nomFps = (int)std::round(frates[slider]);
+					if (data.hrs > 23 || data.mnts > 59 || data.scnds > 59 || data.frms >= nomFps)
+					{
+						++data.rejected_frames_count;
+						data.syncpos = -1;
+					}
+					else
+					{
 					data.syncpos = 0;
 					data.syncstate = 2;
 					data.last_decode_sample = abs_pos;
@@ -226,6 +258,7 @@ inline void handleTimecode(const long double& sample, tc_data& data, const int& 
 							++data.w_continuity_ok;
 					}
 					data.w_prev_frms = data.frms;
+					} // end BCD-valid else
 				}
 				else
 				{
@@ -1136,19 +1169,45 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 						newDtMs = (double)(tc_self_ms_local - tc_ref_ms_local);
 					}
 
-					// Jump detection: reset delay engine if master offset jumps > 2 frames
-					const double frameMs = 1000.0 / fps;
-					if (activeDelayMs != 0.0 && std::abs(newDtMs - d_ms) > 2.0 * frameMs)
+					// Hysteresis: if newDtMs differs from d_ms by more than
+					// D_MS_JUMP_THRESH_MS, hold it in d_ms_pending and require
+					// D_MS_JUMP_CONFIRMS consecutive consistent readings before
+					// committing.  A single garbage frame (e.g. from an abrupt LTC
+					// cut) is rejected; a real large-offset track shift is accepted
+					// after ~3 updates (~0.3 s).
+					bool commitDtMs = true;
+					if (d_ms != 0.0 && std::abs(newDtMs - d_ms) > D_MS_JUMP_THRESH_MS)
 					{
-						chnl1.clear();
-						chnl2.clear();
-						activeDelayMs = 0.0;
+						if (std::abs(newDtMs - d_ms_pending) < D_MS_JUMP_THRESH_MS / 2.0)
+							++d_ms_pending_count;
+						else
+						{
+							d_ms_pending       = newDtMs;
+							d_ms_pending_count = 1;
+						}
+						commitDtMs = (d_ms_pending_count >= D_MS_JUMP_CONFIRMS);
+					}
+					else
+					{
+						d_ms_pending_count = 0;
 					}
 
-					d_ms              = newDtMs;
 					lastMasterWriteMs = juce::Time::currentTimeMillis();
 					masterValid       = true;
 					holding           = false;
+
+					if (commitDtMs)
+					{
+						// Jump detection: reset delay engine if master offset jumps > 2 frames
+						const double frameMs = 1000.0 / fps;
+						if (activeDelayMs != 0.0 && std::abs(newDtMs - d_ms) > 2.0 * frameMs)
+						{
+							chnl1.clear();
+							chnl2.clear();
+							activeDelayMs = 0.0;
+						}
+						d_ms = newDtMs;
+					}
 				}
 				else if (lastMasterWriteMs != 0 &&
 				         juce::Time::currentTimeMillis() - lastMasterWriteMs > 2000)
