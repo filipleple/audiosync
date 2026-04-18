@@ -1,6 +1,6 @@
 /*
   ==============================================================================
-    PluginEditor.h  —  UI redesign, layout phase
+    PluginEditor.h  —  UI redesign, styling phase
     Design reference: 1500 × 900 px (scales proportionally)
   ==============================================================================
 */
@@ -11,32 +11,70 @@
 #include "PluginProcessor.h"
 
 // ============================================================
-// Spacing constants (logical px at reference size)
+// Spacing constants
 // ============================================================
 constexpr int PAD         = 24;
 constexpr int GAP_SMALL   =  6;
 constexpr int GAP_MED     = 12;
 constexpr int GAP_LARGE   = 16;
 constexpr int GAP_SECTION = 20;
-constexpr int GAP_H       = 24;   // horizontal card gap
+constexpr int GAP_H       = 24;
 
 // ============================================================
-// BadgeComponent — pill label; background drawn in styling phase
+// Theme — colours and typography (defined in .cpp)
+// ============================================================
+namespace Theme
+{
+    // Colours — ARGB
+    inline const juce::Colour bg          = juce::Colour(0xFF1C1C1E);  // window background
+    inline const juce::Colour cardBg      = juce::Colour(0xFF2C2C2E);  // card fill
+    inline const juce::Colour cardBorder  = juce::Colour(0xFF3A3A3C);  // card outline
+    inline const juce::Colour divider     = juce::Colour(0xFF3A3A3C);  // inner dividers
+    inline const juce::Colour valueBg     = juce::Colour(0xFF1C1C1E);  // value-box sunken bg
+    inline const juce::Colour valueBorder = juce::Colour(0xFF48484A);
+
+    inline const juce::Colour textPrimary = juce::Colour(0xFFFFFFFF);  // timecode, values
+    inline const juce::Colour textTitle   = juce::Colour(0xFFEBEBF5);  // section/card titles
+    inline const juce::Colour textLabel   = juce::Colour(0xFF8E8E93);  // field labels
+    inline const juce::Colour textMeta    = juce::Colour(0xFF636366);  // sub-text, metadata
+
+    inline const juce::Colour badgeBg     = juce::Colour(0xFF48484A);  // neutral badge
+    inline const juce::Colour accentGreen = juce::Colour(0xFF30D158);  // SYNC / active
+    inline const juce::Colour accentOrange= juce::Colour(0xFFFF9F0A);  // HOLD / warn
+    inline const juce::Colour accentRed   = juce::Colour(0xFFFF453A);  // FAIL / error
+
+    // Geometry
+    constexpr float cardRadius  = 12.0f;
+    constexpr float badgeRadius = 10.0f;   // true pill when badge height ≈ 20px
+
+    // Font sizes
+    constexpr float fontTimecode = 44.0f;  // dominant primary value
+    constexpr float fontValue    = 14.0f;  // metric values in right card
+    constexpr float fontTitle    = 14.0f;  // card / section titles
+    constexpr float fontLabel    = 12.0f;  // field labels
+    constexpr float fontMeta     = 11.0f;  // sub-text, diagnostics content
+    constexpr float fontBadge    = 11.0f;  // badge labels
+}
+
+// ============================================================
+// BadgeComponent — pill-shaped label
 // ============================================================
 class BadgeComponent : public juce::Component
 {
 public:
     explicit BadgeComponent(const juce::String& text = {});
     void setText(const juce::String& t);
+    void setBadgeColour(juce::Colour c);
     void paint(juce::Graphics& g) override;
     void resized() override;
 
 private:
-    juce::Label label;
+    juce::Label    label;
+    juce::Colour   badgeColour { Theme::badgeBg };
 };
 
 // ============================================================
-// HeaderBar  (row 1 of the top-level stack)
+// HeaderBar
 // ============================================================
 class HeaderBar : public juce::Component
 {
@@ -44,19 +82,19 @@ public:
     HeaderBar();
     void resized() override;
 
-    void setMode(const juce::String& m)       { modeBadge.setText(m); }
-    void setGroup(const juce::String& g)      { groupLabel.setText("GROUP: " + g, juce::dontSendNotification); }
-    void setSyncStatus(const juce::String& s) { syncBadge.setText(s); }
-    void setSlot(const juce::String& s)       { slotBadge.setText(s); }
-    void setSource(const juce::String& s)     { sourceBadge.setText(s); }
-    void setFps(const juce::String& f)        { fpsBadge.setText(f); }
+    void setMode(const juce::String& m)   { modeBadge.setText(m); }
+    void setGroup(const juce::String& g)  { groupLabel.setText("GROUP: " + g, juce::dontSendNotification); }
+    void setSyncBadge(const juce::String& text, juce::Colour colour);
+    void setSlot(const juce::String& s)   { slotBadge.setText(s); }
+    void setSource(const juce::String& s) { sourceBadge.setText(s); }
+    void setFps(const juce::String& f)    { fpsBadge.setText(f); }
 
 private:
-    juce::Label    titleLabel;   // "LTC SYNC PANEL"
-    BadgeComponent modeBadge;    // MASTER / SLAVE
-    juce::Label    groupLabel;   // GROUP: …
-    BadgeComponent syncBadge;    // centered sync status
-    BadgeComponent slotBadge;    // right group
+    juce::Label    titleLabel;
+    BadgeComponent modeBadge;
+    juce::Label    groupLabel;
+    BadgeComponent syncBadge;
+    BadgeComponent slotBadge;
     BadgeComponent sourceBadge;
     BadgeComponent fpsBadge;
 };
@@ -71,7 +109,6 @@ public:
     void paint(juce::Graphics& g) override;
     void resized() override;
 
-    // §11 hook: dim timecodes when audio fallback is active (impl in styling phase)
     void setLtcActive(bool active);
 
     void setInputTimecode(const juce::String& tc) { inputTimecode.setText(tc, juce::dontSendNotification); }
@@ -81,21 +118,12 @@ public:
     juce::ComboBox fpsBox;
 
 private:
-    // INPUT side
-    juce::Label inputLabel;
-    juce::Label inputTimecode;
-    juce::Label inputMeta;
+    juce::Label inputLabel, inputTimecode, inputMeta;
+    juce::Label outputLabel, outputTimecode;
+    juce::Label fpsRowLabel;
 
-    // OUTPUT side
-    juce::Label outputLabel;
-    juce::Label outputTimecode;
-
-    // FPS row
-    juce::Label fpsRowLabel;   // "FRAME RATE SELECTION"
-
-    // Divider geometry stored in resized(), drawn in paint()
-    juce::Rectangle<int> vertDivider;   // §4.1 vertical between INPUT / OUTPUT
-    juce::Rectangle<int> horizDivider;  // §4.2 horizontal between timecode row / FPS row
+    juce::Rectangle<int> vertDivider;
+    juce::Rectangle<int> horizDivider;
 };
 
 // ============================================================
@@ -105,9 +133,9 @@ class DelaySyncCard : public juce::Component
 {
 public:
     DelaySyncCard();
+    void paint(juce::Graphics& g) override;
     void resized() override;
 
-    // §11 hook: disable card when mode is Master (impl in styling phase)
     void setMasterMode(bool isMaster);
 
     void setDelayMs(const juce::String& v)     { delayMsValue.setText(v,     juce::dontSendNotification); }
@@ -120,28 +148,23 @@ public:
     juce::Slider     manualSlider;
 
 private:
-    juce::Label titleLabel;        // "DELAY & SYNC"
-
-    // Metric rows
+    juce::Label titleLabel;
     juce::Label delayMsLabel,     delayMsValue;
     juce::Label delayFramesLabel, delayFramesValue;
     juce::Label midiMsLabel,      midiMsValue;
-
-    // Toggle row
-    juce::Label toggleLabel;       // "DELAY TOGGLE"
-
-    // Slider row
-    juce::Label sliderLabel;       // "MANUAL CORRECTION"
-    juce::Label sliderValue;       // live value echo
+    juce::Label toggleLabel;
+    juce::Label sliderLabel;
+    juce::Label sliderValue;
 };
 
 // ============================================================
-// DiagnosticsCard  — four-column diagnostics panel
+// DiagnosticsCard
 // ============================================================
 class DiagnosticsCard : public juce::Component
 {
 public:
     DiagnosticsCard();
+    void paint(juce::Graphics& g) override;
     void resized() override;
 
     void setSummary(float q, float fps, double drift, bool fallback);
@@ -151,21 +174,19 @@ public:
     void setAudioClock(const juce::String& t){ audioContent.setText(t, juce::dontSendNotification); }
 
 private:
-    // §6.1 summary row (4 cells)
     juce::Label summaryQ, summaryFps, summaryDrift, summaryFallback;
-
-    // §6.2 column titles
     juce::Label ch1Title, ch2Title, syncTitle, audioTitle;
-
-    // §6.2 column content
     juce::Label ch1Content, ch2Content, syncContent, audioContent;
-
-    // §6.3 footer
     juce::Label footerLabel;
+
+    // Column separator geometry (set in resized, drawn in paint)
+    std::array<int, 3> colSepX {};
+    int colSepY1 = 0, colSepY2 = 0;
+    juce::Rectangle<int> summaryDivider;
 };
 
 // ============================================================
-// ConfigSection  — device configuration controls
+// ConfigSection
 // ============================================================
 class ConfigSection : public juce::Component
 {
@@ -173,15 +194,14 @@ public:
     ConfigSection();
     void resized() override;
 
-    // All controls public — wired to processor in PluginEditor ctor
     juce::ComboBox   modeBox;
     juce::TextEditor groupEditor;
     juce::ComboBox   slotBox;
-    juce::TextButton ltcChL, ltcChR;   // toggle group (radio, group id 1)
+    juce::TextButton ltcChL, ltcChR;
     juce::TextEditor labelEditor;
 
 private:
-    juce::Label titleLabel;   // "DEVICE CONFIGURATION"
+    juce::Label titleLabel;
     juce::Label modeLabel, groupLabel, slotLabel, ltcChLabel, labelLabel;
 };
 

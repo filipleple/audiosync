@@ -1,12 +1,62 @@
 /*
   ==============================================================================
-    PluginEditor.cpp  —  UI redesign, layout phase
-    All bounds set via Rectangle slicing; no hardcoded positions.
+    PluginEditor.cpp  —  UI redesign, styling phase
   ==============================================================================
 */
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+
+// ============================================================
+// Internal helpers
+// ============================================================
+
+namespace {
+
+// Apply the shared card paint pattern (background + 1px border).
+static void paintCard(juce::Graphics& g, juce::Rectangle<int> bounds)
+{
+    const auto r = bounds.toFloat();
+    g.setColour(Theme::cardBg);
+    g.fillRoundedRectangle(r, Theme::cardRadius);
+    g.setColour(Theme::cardBorder);
+    g.drawRoundedRectangle(r.reduced(0.5f), Theme::cardRadius, 1.0f);
+}
+
+// Style a label as a section/card title.
+static void styleTitle(juce::Label& l)
+{
+    l.setFont(juce::Font(Theme::fontTitle, juce::Font::bold));
+    l.setColour(juce::Label::textColourId, Theme::textTitle);
+    l.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+}
+
+// Style a label as a field label (small, dim).
+static void styleFieldLabel(juce::Label& l)
+{
+    l.setFont(juce::Font(Theme::fontLabel));
+    l.setColour(juce::Label::textColourId, Theme::textLabel);
+    l.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+}
+
+// Style a label as metadata/diagnostic content.
+static void styleMeta(juce::Label& l)
+{
+    l.setFont(juce::Font(Theme::fontMeta));
+    l.setColour(juce::Label::textColourId, Theme::textMeta);
+    l.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+}
+
+// Style a label as a right-aligned metric value (transparent bg — box drawn in paint).
+static void styleValue(juce::Label& l)
+{
+    l.setFont(juce::Font(Theme::fontValue, juce::Font::bold));
+    l.setColour(juce::Label::textColourId, Theme::textPrimary);
+    l.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    l.setJustificationType(juce::Justification::centred);
+}
+
+} // namespace
 
 // ============================================================
 // BadgeComponent
@@ -16,6 +66,9 @@ BadgeComponent::BadgeComponent(const juce::String& text)
 {
     label.setText(text, juce::dontSendNotification);
     label.setJustificationType(juce::Justification::centred);
+    label.setFont(juce::Font(Theme::fontBadge, juce::Font::bold));
+    label.setColour(juce::Label::textColourId, Theme::textPrimary);
+    label.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
     addAndMakeVisible(label);
 }
 
@@ -24,9 +77,17 @@ void BadgeComponent::setText(const juce::String& t)
     label.setText(t, juce::dontSendNotification);
 }
 
-void BadgeComponent::paint(juce::Graphics&)
+void BadgeComponent::setBadgeColour(juce::Colour c)
 {
-    // Styling phase: draw rounded-rect pill background here
+    badgeColour = c;
+    repaint();
+}
+
+void BadgeComponent::paint(juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced(1.0f);
+    g.setColour(badgeColour);
+    g.fillRoundedRectangle(r, r.getHeight() * 0.5f);   // true pill radius
 }
 
 void BadgeComponent::resized()
@@ -41,6 +102,13 @@ void BadgeComponent::resized()
 HeaderBar::HeaderBar()
 {
     titleLabel.setText("LTC SYNC PANEL", juce::dontSendNotification);
+    titleLabel.setFont(juce::Font(Theme::fontTitle + 2.0f, juce::Font::bold));
+    titleLabel.setColour(juce::Label::textColourId, Theme::textPrimary);
+    titleLabel.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+
+    groupLabel.setFont(juce::Font(Theme::fontLabel));
+    groupLabel.setColour(juce::Label::textColourId, Theme::textLabel);
+    groupLabel.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
 
     addAndMakeVisible(titleLabel);
     addAndMakeVisible(modeBadge);
@@ -51,34 +119,35 @@ HeaderBar::HeaderBar()
     addAndMakeVisible(fpsBadge);
 }
 
+void HeaderBar::setSyncBadge(const juce::String& text, juce::Colour colour)
+{
+    syncBadge.setText(text);
+    syncBadge.setBadgeColour(colour);
+}
+
 void HeaderBar::resized()
 {
     auto area = getLocalBounds();
     const int w = area.getWidth();
 
-    // §2: three zones  50% | 20% | 30%
     auto leftZone   = area.removeFromLeft(int(w * 0.50f));
     auto centerZone = area.removeFromLeft(int(w * 0.20f));
-    auto rightZone  = area;   // remaining ~30%
+    auto rightZone  = area;
 
-    // --- LEFT: horizontal flow, gap = 10 ---
-    // icon placeholder (24 × 24, vertically centered)
+    // Left: icon gap | title | modeBadge | groupLabel
     leftZone.removeFromLeft(10);
-    leftZone.removeFromLeft(24);   // icon reserved space
+    leftZone.removeFromLeft(24);   // icon reserved
     leftZone.removeFromLeft(10);
-
     titleLabel.setBounds(leftZone.removeFromLeft(200));
     leftZone.removeFromLeft(10);
-
     modeBadge.setBounds(leftZone.removeFromLeft(80));
     leftZone.removeFromLeft(10);
+    groupLabel.setBounds(leftZone);
 
-    groupLabel.setBounds(leftZone);   // takes remainder
-
-    // --- CENTER: sync badge, fully centered ---
+    // Center: sync badge
     syncBadge.setBounds(centerZone.reduced(4, 4));
 
-    // --- RIGHT: right-aligned badges, gap = 12 ---
+    // Right: right-aligned badges
     rightZone.removeFromRight(10);
     fpsBadge.setBounds(rightZone.removeFromRight(90));
     rightZone.removeFromRight(GAP_MED);
@@ -93,14 +162,36 @@ void HeaderBar::resized()
 
 SignalCard::SignalCard()
 {
+    // Section labels
     inputLabel.setText("INPUT SIGNAL", juce::dontSendNotification);
     outputLabel.setText("OUTPUT SYNC",  juce::dontSendNotification);
+    styleFieldLabel(inputLabel);
+    styleFieldLabel(outputLabel);
 
+    // Timecode displays — dominant element
     inputTimecode.setText("--:--:--:--",  juce::dontSendNotification);
     outputTimecode.setText("--:--:--:--", juce::dontSendNotification);
-    inputMeta.setText("",  juce::dontSendNotification);
+    {
+        const juce::Font tcFont(juce::Font::getDefaultMonospacedFontName(),
+                                Theme::fontTimecode, juce::Font::bold);
+        inputTimecode.setFont(tcFont);
+        outputTimecode.setFont(tcFont);
+    }
+    inputTimecode.setColour(juce::Label::textColourId, Theme::textPrimary);
+    inputTimecode.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    inputTimecode.setJustificationType(juce::Justification::centred);
+    outputTimecode.setColour(juce::Label::textColourId, Theme::textPrimary);
+    outputTimecode.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    outputTimecode.setJustificationType(juce::Justification::centred);
 
+    // Metadata sub-label
+    inputMeta.setText("", juce::dontSendNotification);
+    styleMeta(inputMeta);
+    inputMeta.setJustificationType(juce::Justification::centred);
+
+    // FPS row
     fpsRowLabel.setText("FRAME RATE SELECTION", juce::dontSendNotification);
+    styleFieldLabel(fpsRowLabel);
 
     fpsBox.addItem("30 FPS", 1);
     fpsBox.addItem("25 FPS", 2);
@@ -116,13 +207,16 @@ SignalCard::SignalCard()
 
 void SignalCard::paint(juce::Graphics& g)
 {
-    g.setColour(juce::Colours::grey);
+    // Card background
+    paintCard(g, getLocalBounds());
 
-    // §4.1 vertical divider between INPUT and OUTPUT columns
+    g.setColour(Theme::divider);
+
+    // Vertical divider between INPUT and OUTPUT (§4.1)
     if (!vertDivider.isEmpty())
         g.fillRect(vertDivider);
 
-    // §4.2 horizontal divider between timecode row and FPS row
+    // Horizontal divider between timecode row and FPS row (§4.2)
     if (!horizDivider.isEmpty())
         g.fillRect(horizDivider);
 }
@@ -131,16 +225,14 @@ void SignalCard::resized()
 {
     auto inner = getLocalBounds().reduced(32);
 
-    // §4.1  TimecodeRow: top ~45% of inner height
     const int tcHeight = int(inner.getHeight() * 0.45f);
     auto tcArea = inner.removeFromTop(tcHeight);
 
-    // §4.2  Divider: GAP_LARGE margin above, 1 px line, GAP_LARGE below
     inner.removeFromTop(GAP_LARGE);
     horizDivider = inner.removeFromTop(1);
     inner.removeFromTop(GAP_LARGE);
 
-    // §4.3  FPS row: remainder
+    // FPS row
     {
         auto fpsArea = inner;
         fpsRowLabel.setBounds(fpsArea.removeFromTop(20));
@@ -148,40 +240,40 @@ void SignalCard::resized()
         fpsBox.setBounds(fpsArea.removeFromLeft(220).removeFromTop(28));
     }
 
-    // --- TimecodeRow split 50 / 50 ---
+    // TimecodeRow split 50/50
     auto inputArea  = tcArea.removeFromLeft(tcArea.getWidth() / 2);
     auto outputArea = tcArea;
 
-    // §4.1 store vertical divider geometry (1 px column at the boundary)
     vertDivider = juce::Rectangle<int>(inputArea.getRight(), inputArea.getY(),
                                        1, inputArea.getHeight());
     inputArea.removeFromRight(1);
     outputArea.removeFromLeft(1);
 
-    // §4.1 INPUT side vertical layout:  label / gap / timecode(60%) / gap / meta
+    // INPUT side
     {
         auto a = inputArea;
         inputLabel.setBounds(a.removeFromTop(20));
         a.removeFromTop(GAP_SMALL);
-        const int tcH = int(a.getHeight() * 0.60f);
-        inputTimecode.setBounds(a.removeFromTop(tcH));
+        inputTimecode.setBounds(a.removeFromTop(int(a.getHeight() * 0.60f)));
         a.removeFromTop(4);
         inputMeta.setBounds(a.removeFromTop(20));
     }
 
-    // §4.1 OUTPUT side vertical layout: label / gap / timecode(60%)
+    // OUTPUT side
     {
         auto a = outputArea;
         outputLabel.setBounds(a.removeFromTop(20));
         a.removeFromTop(GAP_SMALL);
-        const int tcH = int(a.getHeight() * 0.60f);
-        outputTimecode.setBounds(a.removeFromTop(tcH));
+        outputTimecode.setBounds(a.removeFromTop(int(a.getHeight() * 0.60f)));
     }
 }
 
-void SignalCard::setLtcActive(bool /*active*/)
+void SignalCard::setLtcActive(bool active)
 {
-    // §11 hook — styling phase: dim INPUT/OUTPUT timecodes when fallback active
+    const juce::Colour tcColour = active ? Theme::textPrimary : Theme::textMeta;
+    inputTimecode.setColour(juce::Label::textColourId, tcColour);
+    outputTimecode.setColour(juce::Label::textColourId, tcColour);
+    inputMeta.setColour(juce::Label::textColourId, active ? Theme::textMeta : Theme::textMeta.darker(0.4f));
 }
 
 // ============================================================
@@ -190,21 +282,36 @@ void SignalCard::setLtcActive(bool /*active*/)
 
 DelaySyncCard::DelaySyncCard()
 {
+    // Card title
     titleLabel.setText("DELAY & SYNC", juce::dontSendNotification);
+    styleTitle(titleLabel);
 
-    delayMsLabel.setText("IN DELAY (MS)",     juce::dontSendNotification);
+    // Field labels
+    delayMsLabel.setText("IN DELAY (MS)",      juce::dontSendNotification);
     delayFramesLabel.setText("IN DELAY (FRAMES)", juce::dontSendNotification);
-    midiMsLabel.setText("OUT MIDI (MS)",      juce::dontSendNotification);
+    midiMsLabel.setText("OUT MIDI (MS)",       juce::dontSendNotification);
+    toggleLabel.setText("DELAY TOGGLE",        juce::dontSendNotification);
+    sliderLabel.setText("MANUAL CORRECTION",   juce::dontSendNotification);
+    styleFieldLabel(delayMsLabel);
+    styleFieldLabel(delayFramesLabel);
+    styleFieldLabel(midiMsLabel);
+    styleFieldLabel(toggleLabel);
+    styleFieldLabel(sliderLabel);
 
+    // Value labels — right-aligned, transparent bg (box drawn in paint)
     delayMsValue.setText("--",   juce::dontSendNotification);
     delayFramesValue.setText("--", juce::dontSendNotification);
     midiMsValue.setText("--",    juce::dontSendNotification);
+    styleValue(delayMsValue);
+    styleValue(delayFramesValue);
+    styleValue(midiMsValue);
 
-    toggleLabel.setText("DELAY TOGGLE", juce::dontSendNotification);
-    delayToggle.setButtonText("OFF");
-
-    sliderLabel.setText("MANUAL CORRECTION", juce::dontSendNotification);
+    // Slider value echo
     sliderValue.setText("0 ms", juce::dontSendNotification);
+    styleMeta(sliderValue);
+    sliderValue.setJustificationType(juce::Justification::centredRight);
+
+    delayToggle.setButtonText("OFF");
 
     manualSlider.setRange(-1500.0, 1500.0);
     manualSlider.setNumDecimalPlacesToDisplay(0);
@@ -224,16 +331,27 @@ DelaySyncCard::DelaySyncCard()
     addAndMakeVisible(manualSlider);
 }
 
+void DelaySyncCard::paint(juce::Graphics& g)
+{
+    paintCard(g, getLocalBounds());
+
+    // Value-box sunken backgrounds (rounded insets behind value labels)
+    g.setColour(Theme::valueBg);
+    for (const auto* lbl : { &delayMsValue, &delayFramesValue, &midiMsValue })
+        g.fillRoundedRectangle(lbl->getBounds().toFloat(), 4.0f);
+
+    g.setColour(Theme::valueBorder);
+    for (const auto* lbl : { &delayMsValue, &delayFramesValue, &midiMsValue })
+        g.drawRoundedRectangle(lbl->getBounds().toFloat().reduced(0.5f), 4.0f, 1.0f);
+}
+
 void DelaySyncCard::resized()
 {
-    // §5: inner padding 24 px
     auto inner = getLocalBounds().reduced(24);
 
-    // §5.1 Title
     titleLabel.setBounds(inner.removeFromTop(28));
     inner.removeFromTop(GAP_LARGE);
 
-    // §5.2 Three metric rows: label left / value right, 32 px tall, 12 px gap
     constexpr int ROW_H  = 32;
     constexpr int VALUE_W = 100;
 
@@ -251,7 +369,7 @@ void DelaySyncCard::resized()
 
     inner.removeFromTop(GAP_LARGE);
 
-    // §5.3 Toggle row: label left / button right, 28 px tall
+    // Toggle row
     {
         auto row = inner.removeFromTop(28);
         delayToggle.setBounds(row.removeFromRight(80));
@@ -259,7 +377,7 @@ void DelaySyncCard::resized()
     }
     inner.removeFromTop(GAP_LARGE);
 
-    // §5.4 Slider row: label+value line, then full-width slider 24 px
+    // Slider row
     {
         auto labelRow = inner.removeFromTop(20);
         sliderValue.setBounds(labelRow.removeFromRight(80));
@@ -269,9 +387,9 @@ void DelaySyncCard::resized()
     }
 }
 
-void DelaySyncCard::setMasterMode(bool /*isMaster*/)
+void DelaySyncCard::setMasterMode(bool isMaster)
 {
-    // §11 hook — styling phase: disable/dim entire card when Master mode
+    setAlpha(isMaster ? 0.35f : 1.0f);
 }
 
 // ============================================================
@@ -280,17 +398,35 @@ void DelaySyncCard::setMasterMode(bool /*isMaster*/)
 
 DiagnosticsCard::DiagnosticsCard()
 {
-    summaryQ.setText("Q: --",           juce::dontSendNotification);
-    summaryFps.setText("FPS: --",       juce::dontSendNotification);
-    summaryDrift.setText("DRIFT: --",   juce::dontSendNotification);
+    // Summary row
+    for (auto* l : { &summaryQ, &summaryFps, &summaryDrift, &summaryFallback })
+    {
+        l->setFont(juce::Font(Theme::fontLabel, juce::Font::bold));
+        l->setColour(juce::Label::textColourId, Theme::textTitle);
+        l->setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+    }
+    summaryQ.setText("Q: --",              juce::dontSendNotification);
+    summaryFps.setText("FPS: --",          juce::dontSendNotification);
+    summaryDrift.setText("DRIFT: --",      juce::dontSendNotification);
     summaryFallback.setText("FALLBACK: --", juce::dontSendNotification);
 
-    ch1Title.setText("CHANNEL 1",   juce::dontSendNotification);
-    ch2Title.setText("CHANNEL 2",   juce::dontSendNotification);
+    // Column titles
+    for (auto* l : { &ch1Title, &ch2Title, &syncTitle, &audioTitle })
+        styleTitle(*l);
+    ch1Title.setText("CHANNEL 1",    juce::dontSendNotification);
+    ch2Title.setText("CHANNEL 2",    juce::dontSendNotification);
     syncTitle.setText("SYNC ENGINE", juce::dontSendNotification);
     audioTitle.setText("AUDIO CLOCK", juce::dontSendNotification);
 
+    // Column content
+    for (auto* l : { &ch1Content, &ch2Content, &syncContent, &audioContent })
+        styleMeta(*l);
+
+    // Footer
     footerLabel.setText("VIEW RAW DIAGNOSTICS LOG", juce::dontSendNotification);
+    footerLabel.setFont(juce::Font(Theme::fontMeta));
+    footerLabel.setColour(juce::Label::textColourId, Theme::textMeta);
+    footerLabel.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
 
     addAndMakeVisible(summaryQ);
     addAndMakeVisible(summaryFps);
@@ -307,15 +443,33 @@ DiagnosticsCard::DiagnosticsCard()
     addAndMakeVisible(footerLabel);
 }
 
+void DiagnosticsCard::paint(juce::Graphics& g)
+{
+    paintCard(g, getLocalBounds());
+
+    g.setColour(Theme::divider);
+
+    // Horizontal separator below summary row
+    if (!summaryDivider.isEmpty())
+        g.fillRect(summaryDivider);
+
+    // Vertical column separators
+    for (int x : colSepX)
+        if (x > 0)
+            g.fillRect(juce::Rectangle<int>(x, colSepY1, 1, colSepY2 - colSepY1));
+}
+
 void DiagnosticsCard::resized()
 {
-    // §6: inner padding 16 px
     auto inner = getLocalBounds().reduced(16);
 
-    // §6.1 Summary row: 28 px, 4 equal columns
+    // Summary row
     {
         auto row = inner.removeFromTop(28);
+        inner.removeFromTop(GAP_SMALL);
+        summaryDivider = inner.removeFromTop(1);
         inner.removeFromTop(GAP_MED);
+
         const int colW = row.getWidth() / 4;
         summaryQ.setBounds(row.removeFromLeft(colW));
         summaryFps.setBounds(row.removeFromLeft(colW));
@@ -323,16 +477,21 @@ void DiagnosticsCard::resized()
         summaryFallback.setBounds(row);
     }
 
-    // §6.3 Footer: 24 px from bottom
+    // Footer
     footerLabel.setBounds(inner.removeFromBottom(24));
     inner.removeFromBottom(GAP_MED);
 
-    // §6.2 Main diagnostics row: 4 equal columns
+    // Store column separator geometry (3 lines between 4 equal columns)
     const int colW = inner.getWidth() / 4;
+    colSepY1 = inner.getY();
+    colSepY2 = inner.getBottom();
+    for (int i = 0; i < 3; ++i)
+        colSepX[i] = inner.getX() + (i + 1) * colW;
 
+    // Lay out columns
     auto layoutCol = [&](juce::Label& title, juce::Label& content)
     {
-        auto col = inner.removeFromLeft(colW);
+        auto col = inner.removeFromLeft(colW).reduced(GAP_SMALL, 0);
         title.setBounds(col.removeFromTop(20));
         col.removeFromTop(GAP_SMALL);
         content.setBounds(col);
@@ -349,7 +508,8 @@ void DiagnosticsCard::setSummary(float q, float fps, double drift, bool fallback
     summaryQ.setText("Q: " + juce::String(q, 2), juce::dontSendNotification);
     summaryFps.setText("FPS: " + juce::String(fps, 1), juce::dontSendNotification);
     summaryDrift.setText("DRIFT: " + juce::String(drift, 2) + " ms/s", juce::dontSendNotification);
-    summaryFallback.setText(juce::String("FALLBACK: ") + (fallback ? "YES" : "NO"), juce::dontSendNotification);
+    summaryFallback.setText(juce::String("FALLBACK: ") + (fallback ? "YES" : "NO"),
+                            juce::dontSendNotification);
 }
 
 // ============================================================
@@ -359,11 +519,18 @@ void DiagnosticsCard::setSummary(float q, float fps, double drift, bool fallback
 ConfigSection::ConfigSection()
 {
     titleLabel.setText("DEVICE CONFIGURATION", juce::dontSendNotification);
-    modeLabel.setText("Mode",        juce::dontSendNotification);
-    groupLabel.setText("Group",      juce::dontSendNotification);
-    slotLabel.setText("Slot",        juce::dontSendNotification);
+    styleTitle(titleLabel);
+
+    styleFieldLabel(modeLabel);
+    styleFieldLabel(groupLabel);
+    styleFieldLabel(slotLabel);
+    styleFieldLabel(ltcChLabel);
+    styleFieldLabel(labelLabel);
+    modeLabel.setText("Mode",         juce::dontSendNotification);
+    groupLabel.setText("Group",       juce::dontSendNotification);
+    slotLabel.setText("Slot",         juce::dontSendNotification);
     ltcChLabel.setText("LTC Channel", juce::dontSendNotification);
-    labelLabel.setText("Label",      juce::dontSendNotification);
+    labelLabel.setText("Label",       juce::dontSendNotification);
 
     modeBox.addItem("Master", 1);
     modeBox.addItem("Slave",  2);
@@ -371,7 +538,6 @@ ConfigSection::ConfigSection()
     for (int i = 1; i <= 8; ++i)
         slotBox.addItem(juce::String(i), i);
 
-    // LTC channel — radio group so JUCE handles mutual exclusion
     ltcChL.setButtonText("L");
     ltcChL.setClickingTogglesState(true);
     ltcChL.setRadioGroupId(1);
@@ -396,13 +562,12 @@ void ConfigSection::resized()
 {
     auto area = getLocalBounds();
 
-    // Title row
     titleLabel.setBounds(area.removeFromTop(28));
     area.removeFromTop(GAP_MED);
 
-    // §7.1 Row 1: Mode (300 px fixed) | gap | Group (flex)
+    // Row 1: Mode (300 px fixed) | gap | Group (flex)
     {
-        auto row = area.removeFromTop(18 + GAP_SMALL + 24);   // label + gap + control
+        auto row = area.removeFromTop(18 + GAP_SMALL + 24);
         auto modeArea  = row.removeFromLeft(300);
         row.removeFromLeft(GAP_H);
         auto groupArea = row;
@@ -417,7 +582,7 @@ void ConfigSection::resized()
     }
     area.removeFromTop(GAP_MED);
 
-    // §7.2 Row 2: Slot(20%) | gap | LTC ch(25%) | gap | Label(55%)
+    // Row 2: Slot(20%) | gap | LTC ch(25%) | gap | Label(55%)
     {
         auto row = area.removeFromTop(18 + GAP_SMALL + 24);
         const int usableW = row.getWidth() - 2 * GAP_H;
@@ -430,12 +595,10 @@ void ConfigSection::resized()
         row.removeFromLeft(GAP_H);
         auto labelArea = row;
 
-        // Slot
         slotLabel.setBounds(slotArea.removeFromTop(18));
         slotArea.removeFromTop(GAP_SMALL);
         slotBox.setBounds(slotArea.removeFromTop(24));
 
-        // LTC channel: two equal-width toggle buttons side by side
         ltcChLabel.setBounds(ltcArea.removeFromTop(18));
         ltcArea.removeFromTop(GAP_SMALL);
         {
@@ -446,7 +609,6 @@ void ConfigSection::resized()
             ltcChR.setBounds(ctrl);
         }
 
-        // Label
         labelLabel.setBounds(labelArea.removeFromTop(18));
         labelArea.removeFromTop(GAP_SMALL);
         labelEditor.setBounds(labelArea.removeFromTop(24));
@@ -466,20 +628,20 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
     addAndMakeVisible(diagCard);
     addAndMakeVisible(configSection);
 
-    // --- FPS selector ---
+    // FPS selector
     signalCard.fpsBox.setSelectedId(audioProcessor.fps == 25 ? 2 : 1, juce::dontSendNotification);
     signalCard.fpsBox.onChange = [&]()
     {
         audioProcessor.fps = (signalCard.fpsBox.getSelectedId() == 2) ? 25 : 30;
     };
 
-    // --- Delay toggle ---
+    // Delay toggle
     delayCard.delayToggle.onClick = [&]()
     {
         audioProcessor.active_delay = !audioProcessor.active_delay;
     };
 
-    // --- Manual correction slider ---
+    // Manual correction slider
     delayCard.manualSlider.setValue(audioProcessor.by_slider, juce::dontSendNotification);
     delayCard.manualSlider.onValueChange = [&]()
     {
@@ -488,14 +650,14 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
         delayCard.setManualValue(juce::String((int)v) + " ms");
     };
 
-    // --- Config: Mode ---
+    // Config: Mode
     configSection.modeBox.setSelectedId((int)audioProcessor.pluginMode + 1, juce::dontSendNotification);
     configSection.modeBox.onChange = [&]()
     {
         audioProcessor.pluginMode = (PluginMode)(configSection.modeBox.getSelectedId() - 1);
     };
 
-    // --- Config: Group ---
+    // Config: Group
     configSection.groupEditor.setText(audioProcessor.groupName, false);
     auto applyGroup = [&]()
     {
@@ -503,23 +665,23 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
         if (g.isEmpty()) { configSection.groupEditor.setText(audioProcessor.groupName, false); return; }
         if (g != audioProcessor.groupName) { audioProcessor.groupName = g; audioProcessor.reopenShm(); }
     };
-    configSection.groupEditor.onReturnKey  = applyGroup;
-    configSection.groupEditor.onFocusLost  = applyGroup;
+    configSection.groupEditor.onReturnKey = applyGroup;
+    configSection.groupEditor.onFocusLost = applyGroup;
 
-    // --- Config: Slot ---
+    // Config: Slot
     configSection.slotBox.setSelectedId(audioProcessor.slotId, juce::dontSendNotification);
     configSection.slotBox.onChange = [&]()
     {
         audioProcessor.slotId = configSection.slotBox.getSelectedId();
     };
 
-    // --- Config: LTC channel ---
+    // Config: LTC channel
     configSection.ltcChL.setToggleState(audioProcessor.ltcChannel == 0, juce::dontSendNotification);
     configSection.ltcChR.setToggleState(audioProcessor.ltcChannel == 1, juce::dontSendNotification);
     configSection.ltcChL.onClick = [&]() { audioProcessor.ltcChannel = 0; };
     configSection.ltcChR.onClick = [&]() { audioProcessor.ltcChannel = 1; };
 
-    // --- Config: Label ---
+    // Config: Label
     configSection.labelEditor.setText(audioProcessor.slotLabel, false);
     configSection.labelEditor.onTextChange = [&]()
     {
@@ -533,16 +695,16 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
 NewProjectAudioProcessorEditor::~NewProjectAudioProcessorEditor() {}
 
 // ============================================================
-// paint  — background fill; card backgrounds added in styling phase
+// paint  — window background
 // ============================================================
 
 void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
 {
-    g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
+    g.fillAll(Theme::bg);
 }
 
 // ============================================================
-// resized  — top-level Rectangle slicing (§1)
+// resized  — top-level Rectangle slicing
 // ============================================================
 
 void NewProjectAudioProcessorEditor::resized()
@@ -550,24 +712,19 @@ void NewProjectAudioProcessorEditor::resized()
     auto area = getLocalBounds().reduced(PAD);
     const int totalH = getHeight();
 
-    // §1  HeaderBar  44 px
     header.setBounds(area.removeFromTop(44));
     area.removeFromTop(GAP_SECTION);
 
-    // §1  MainRow  ~42% of total height
     const int mainH = int(totalH * 0.42f);
     auto mainRow = area.removeFromTop(mainH);
     area.removeFromTop(GAP_SECTION);
 
-    // §1  DiagnosticsCard  ~18% of total height
     const int diagH = int(totalH * 0.18f);
     diagCard.setBounds(area.removeFromTop(diagH));
     area.removeFromTop(GAP_SECTION);
 
-    // §1  ConfigSection  fills remainder
     configSection.setBounds(area);
 
-    // §3  MainRow split  68% SignalCard | gap | 32% DelaySyncCard
     const int leftW = int(mainRow.getWidth() * 0.68f);
     signalCard.setBounds(mainRow.removeFromLeft(leftW));
     mainRow.removeFromLeft(GAP_H);
@@ -587,24 +744,23 @@ void NewProjectAudioProcessorEditor::timerCallback()
 
     {
         const char* srcNames[] = { "NONE", "LTC", "AUD" };
-        int src = std::clamp(audioProcessor.aud_fusionSource, 0, 2);
-        header.setSource(srcNames[src]);
+        header.setSource(srcNames[std::clamp(audioProcessor.aud_fusionSource, 0, 2)]);
     }
 
     if (audioProcessor.pluginMode == PluginMode::Master)
     {
-        header.setSyncStatus("SM:" + juce::String(audioProcessor.shmWriteCount));
+        header.setSyncBadge("SM:" + juce::String(audioProcessor.shmWriteCount), Theme::badgeBg);
         header.setSlot("MASTER");
     }
     else
     {
         header.setSlot("SLOT " + juce::String(audioProcessor.slotId));
         if (audioProcessor.holding)
-            header.setSyncStatus("HOLD");
+            header.setSyncBadge("HOLD", Theme::accentOrange);
         else if (audioProcessor.masterValid)
-            header.setSyncStatus("SYNC");
+            header.setSyncBadge("SYNC", Theme::accentGreen);
         else
-            header.setSyncStatus("WAIT");
+            header.setSyncBadge("WAIT", Theme::cardBorder);
     }
 
     // --- SignalCard ---
@@ -657,11 +813,9 @@ void NewProjectAudioProcessorEditor::timerCallback()
         const char* srcNm[] = { "NONE", "LTC", "AUD" };
         const int src = std::clamp(audioProcessor.aud_fusionSource, 0, 2);
         const juce::String dtStr = audioProcessor.aud_conf > 0.01
-            ? juce::String(audioProcessor.aud_deltaMs, 0) + "ms"
-            : "---";
+            ? juce::String(audioProcessor.aud_deltaMs, 0) + "ms" : "---";
         const juce::String activeStr = audioProcessor.aud_activeDelayMs != 0.0
-            ? juce::String((int)std::round(audioProcessor.aud_activeDelayMs)) + "ms"
-            : "off";
+            ? juce::String((int)std::round(audioProcessor.aud_activeDelayMs)) + "ms" : "off";
         diagCard.setAudioClock(
             "dt=" + dtStr +
             "  conf=" + juce::String(audioProcessor.aud_conf, 2) +
