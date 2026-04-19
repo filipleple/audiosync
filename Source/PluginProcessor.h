@@ -287,8 +287,11 @@ struct AudioFallbackState
 	// Slave mode: linearised master reference novelty copied from SM every ~0.1s.
 	// When hasMasterRef is true, estimateAudioFallbackOffset() uses this instead
 	// of linearising novelty2, so the NCC compares slave transients vs master transients.
+	// masterFramesFilled tracks how many of the newest-aligned frames are real
+	// data (the oldest-aligned tail is zero when master's ring isn't full).
 	std::vector<float> masterNoveltyRef;
-	bool hasMasterRef = false;
+	bool hasMasterRef       = false;
+	int  masterFramesFilled = 0;
 
 	// Anchor: last LTC-confirmed offset used to centre the narrow NCC search.
 	// Set by fuseLtcAndAudioFallback() whenever ltcOk is true.
@@ -353,7 +356,8 @@ struct AudioFallbackState
 		prevBestLag = INT_MAX;
 		stableCount = 0;
 		valid = false;
-		hasMasterRef = false;
+		hasMasterRef       = false;
+		masterFramesFilled = 0;
 		hasAnchor = false;
 		anchorMs  = 0.0;
 		anchorHops = 0;

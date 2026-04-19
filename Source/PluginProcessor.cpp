@@ -548,26 +548,34 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 		timeDeltaHops = std::max(0, std::min(timeDeltaHops, N / 8));
 	}
 
-	// Effective anchor for linBuf2 pre-shift: subtract staleness so the
-	// corrected master reference aligns with the slave's current window.
-	const int K_eff = audFallback.anchorHops - timeDeltaHops;
+	// Effective anchor (in hops), corrected for SM read staleness.
+	// Positive K_eff -> slave is LATE w.r.t. master  -> look into master's past.
+	// Negative K_eff -> slave is AHEAD w.r.t. master -> look into slave's past
+	//                   (master can't see its own future, so we can't shift it forward).
+	// Exactly one of masterShift / slaveShift is non-zero at a time.
+	const int K_eff       = audFallback.anchorHops - timeDeltaHops;
+	const int masterShift = (K_eff > 0) ?  K_eff : 0;
+	const int slaveShift  = (K_eff < 0) ? -K_eff : 0;
 
-	// anchorAgeOk: we have a recent LTC-confirmed anchor.
+	// anchorAgeOk: we have a recent LTC- or NCC-confirmed anchor.
 	const bool anchorAgeOk =
 		audFallback.hasAnchor
 		&& (juce::Time::currentTimeMillis() - anchorTimestampMs) < (int64_t)ANCHOR_MAX_AGE_MS;
 
-	// anchorUsable: age ok AND K_eff fits inside the window so the narrow
-	// ±NARROW_HALF search covers the expected peak with adequate overlap.
-	// With N=2000, this supports offsets up to ±1969 hops = ±19.69 s.
+	// anchorUsable: age ok, master ref received, AND each side has enough
+	// real (non-zero) history to cover its respective shift plus the NCC
+	// window.  The ring capacity already bounds shifts at ±N; the per-side
+	// framesFilled check is the load-bearing constraint when rings aren't
+	// full yet.
 	const bool anchorUsable =
 		anchorAgeOk
 		&& audFallback.hasMasterRef
-		&& std::abs(K_eff) < N - AudioFallbackState::NARROW_HALF - 1;
+		&& std::abs(K_eff) < N - AudioFallbackState::NARROW_HALF - 1
+		&& audFallback.masterFramesFilled >= AudioFallbackState::ANCHORED_WIN + masterShift
+		&& audFallback.framesFilled       >= AudioFallbackState::ANCHORED_WIN + slaveShift;
 
-	// If the anchor is recent but K_eff exceeds the window (offset > ~19.7 s),
-	// hold the LTC value rather than running a wide NCC that can't reach the
-	// true peak.  Essentially a guardrail — real scenarios should fit.
+	// Anchor is fresh but history too short for a safe anchored NCC: hold
+	// the LTC value rather than feed the alpha-beta a bogus residual.
 	if (anchorAgeOk && !anchorUsable)
 	{
 		audFallback.deltaAudMs = audFallback.anchorMs;
@@ -596,22 +604,26 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 	const int startOff = N - nccN;
 
 	// ------------------------------------------------------------------
-	// Linearise novelty1 (slave, circular, most-recent nccN frames).
+	// Linearise novelty1 (slave, circular).  Anchored-mode pre-shift of
+	// slaveShift hops kicks in only when K_eff<0 (slave ahead): we can't
+	// shift master forward in time, so instead we read slave's past to
+	// line it up with master's present.
 	// ------------------------------------------------------------------
+	const int s1Shift = anchorUsable ? slaveShift : 0;
 	for (int i = 0; i < nccN; ++i)
 	{
-		int src = (audFallback.writePos + startOff + i) % N;
+		int src = (audFallback.writePos + startOff + i - s1Shift + N * 8) % N;
 		audFallback.linBuf1[i] = audFallback.novelty1[src];
 	}
 
 	// ------------------------------------------------------------------
-	// Linearise novelty2 / build reference for linBuf2.
+	// Build linBuf2 (master reference).
 	//
-	// Anchored: pre-shift masterNoveltyRef by -K_eff so that the NCC peak
-	// lands at relLag=0 when the true offset equals anchorMs.
-	// masterNoveltyRef is already a linearised (oldest→newest) copy from SM;
-	// index it as masterNoveltyRef[(startOff + i - K_eff + N*8) % N] to
-	// grab the same time-slice as linBuf1 but aligned by K_eff.
+	// Anchored: pre-shift masterNoveltyRef back by masterShift so the NCC
+	// peak lands at relLag=0 when the true offset equals anchorMs.  Only
+	// one of masterShift/slaveShift is non-zero, so their difference still
+	// equals K_eff and the absoluteLag conversion below (bestRelLag −
+	// anchorHops) is the same expression whichever side was shifted.
 	//
 	// Wide: use masterNoveltyRef unshifted (or novelty2 if SM not yet up),
 	// corrected for SM staleness by timeDeltaHops.
@@ -619,7 +631,7 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 	if (anchorUsable)
 	{
 		for (int i = 0; i < nccN; ++i)
-			audFallback.linBuf2[i] = audFallback.masterNoveltyRef[(startOff + i - K_eff + N * 8) % N];
+			audFallback.linBuf2[i] = audFallback.masterNoveltyRef[(startOff + i - masterShift + N * 8) % N];
 	}
 	else
 	{
@@ -725,10 +737,12 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 	// ------------------------------------------------------------------
 	// Convert relative lag → absolute lag → milliseconds.
 	//
-	// Anchored: linBuf2 was pre-shifted by -K_eff = -(anchorHops - timeDeltaHops).
-	// A residual relLag=0 means "offset = anchorHops exactly (after staleness
-	// correction)".  The output is expressed in terms of uncorrected anchorHops:
-	//   absoluteLag = relLag - anchorHops
+	// Anchored: whichever side was pre-shifted, the net pre-shift between
+	// slave and master equals K_eff (= masterShift − slaveShift since at
+	// most one is non-zero), so a residual relLag=0 still means "offset =
+	// anchorHops exactly".  Conversion to absolute lag is the same in both
+	// cases:
+	//   absoluteLag = relLag − anchorHops
 	//
 	// Wide: no shift — relative == absolute.
 	//
@@ -1138,7 +1152,12 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 				// Linearise master's circular novelty buffer (oldest→newest) into
 				// audFallback.masterNoveltyRef so that estimateAudioFallbackOffset()
 				// can cross-correlate slave transients against master transients.
-				if (nov_framesFilled_local >= audFallback.windowFrames)
+				// Gate at WIDE_WIN (4 s) rather than full windowFrames (20 s) so
+				// wide-mode NCC can start shortly after both instances come up;
+				// anchored mode additionally gates on masterFramesFilled covering
+				// the specific anchor shift (see estimateAudioFallbackOffset).
+				audFallback.masterFramesFilled = nov_framesFilled_local;
+				if (nov_framesFilled_local >= AudioFallbackState::WIDE_WIN)
 				{
 					const int N = audFallback.windowFrames;
 					for (int ni = 0; ni < N; ++ni)
