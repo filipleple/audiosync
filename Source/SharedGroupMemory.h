@@ -16,11 +16,14 @@
     POSIX (Linux / macOS):  shm_open + ftruncate + mmap
     Windows:                CreateFileMappingA + MapViewOfFile
 
-    The shared region is named  "/AUTOSYNC_<groupName>"  on POSIX  (appears
-    under /dev/shm/ on Linux) and  "Global\AUTOSYNC_<groupName>"  on Windows.
+    The shared region is named  "/AUTOSYNC2_<groupName>"  on POSIX  (appears
+    under /dev/shm/ on Linux) and  "Global\AUTOSYNC2_<groupName>"  on Windows.
     It persists until the OS is rebooted or until explicitly unlinked — this is
     intentional so that a plugin restart attaches to the existing region without
-    losing data from other instances.
+    losing data from other instances.  The "2" suffix guards against attaching
+    to segments produced by an older plugin build with a different struct
+    layout (nov_ref used to be 400 frames; growing it would overflow an old
+    mapping).  Bump this suffix any time MasterSlot / SlaveSlot layout changes.
 
   ==============================================================================
 */
@@ -48,6 +51,13 @@
 // Shared data structures
 // ============================================================================
 
+// Length of the master-side reference novelty ring, in hops (10 ms each).
+// Sized to cover realistic LTC-captured anchors: at 20 s the anchored NCC
+// search (NARROW_HALF = 30 hops in the plugin) can reach ±19.69 s before the
+// window runs out of master history.  Keep MasterSlot::nov_ref and the plugin's
+// AudioFallbackState::windowFrames consistent with this value.
+static constexpr int MASTER_NOV_REF_SIZE = 2000;
+
 // Written by the master instance; read by every slave.
 //
 // Memory is zero-initialised by the OS on creation.  The in-class defaults
@@ -71,8 +81,8 @@ struct MasterSlot
     float   Q_ref              = 0.0f;
 
     int     nov_writePos     = 0;      // circular buffer head (next write index)
-    int     nov_framesFilled = 0;      // frames populated so far, saturates at 400
-    float   nov_ref[400]     = {};     // reference novelty curve (4 s at 10 ms/hop, ~1600 bytes)
+    int     nov_framesFilled = 0;      // frames populated so far, saturates at MASTER_NOV_REF_SIZE
+    float   nov_ref[MASTER_NOV_REF_SIZE] = {};  // reference novelty curve (20 s at 10 ms/hop, ~8 KB)
 };
 
 // Written by one slave instance; read by the master (for the dashboard).
@@ -222,7 +232,7 @@ private:
 
     bool openWindows(const std::string& groupName)
     {
-        const std::string name = "Global\\AUTOSYNC_" + groupName;
+        const std::string name = "Global\\AUTOSYNC2_" + groupName;
 
         // Try to attach to an existing mapping first (preserves content when
         // other instances are already running).
@@ -261,7 +271,7 @@ private:
 
     bool openPosix(const std::string& groupName)
     {
-        const std::string name = "/AUTOSYNC_" + groupName;
+        const std::string name = "/AUTOSYNC2_" + groupName;
 
         // Attempt exclusive creation to know whether ftruncate is needed.
         // If it fails with EEXIST another instance already created the segment.

@@ -298,16 +298,20 @@ struct AudioFallbackState
 	bool   lastEstimateAnchored  = false; // set by estimateAudioFallbackOffset, read by fuse
 
 	// Half-width of the narrow lag search in hops (±300 ms at 10 ms/hop).
-	// Must satisfy: NARROW_HALF < windowFrames/2 to keep meaningful overlap.
+	// Must satisfy: NARROW_HALF < ANCHORED_WIN/2 to keep meaningful overlap.
 	static constexpr int NARROW_HALF = 30;
 
 	// Effective NCC window in anchored mode (frames).
-	// Using only the most recent ANCHORED_WIN frames (1.2 s) instead of the
-	// full 400-frame buffer means the estimator reacts within ~1.2 s after a
-	// manual track shift, rather than waiting 4 s for the full buffer to turn over.
+	// Using only the most recent ANCHORED_WIN frames (1.2 s) means the estimator
+	// reacts within ~1.2 s after a manual track shift.
 	// Must satisfy: ANCHORED_WIN > 2 * NARROW_HALF (= 60) to maintain adequate
 	// overlap at ±NARROW_HALF lag.
 	static constexpr int ANCHORED_WIN = 120;
+
+	// Effective NCC window in wide (no-anchor) mode (frames).
+	// Kept at 4 s so cold-start acquisition still reacts in a few seconds,
+	// independent of how long the full novelty ring is.
+	static constexpr int WIDE_WIN = 400;
 
 	// Estimation results
 	double deltaAudMs  = 0.0;
@@ -323,8 +327,11 @@ struct AudioFallbackState
 	{
 		hopMs        = 10.0;
 		hopSamples   = (int)std::round(sampleRate * 0.010);
-		windowFrames = 400;   // 4 s window — supports anchored NCC up to ±3.6 s offset
-		lagRange     = 200;   // ±2 s wide search (50% overlap at max lag with N=400)
+		// 20 s novelty ring so the slave can hold enough master history for
+		// anchored NCC to reach offsets up to ±(N − NARROW_HALF − 1) ≈ ±19.69 s.
+		// Keep in lockstep with SharedGroupMemory.h:MASTER_NOV_REF_SIZE.
+		windowFrames = MASTER_NOV_REF_SIZE;
+		lagRange     = 200;   // ±2 s wide search
 
 		// HPF: 1-pole IIR, cutoff 100 Hz.  alpha = 1 / (1 + 2π·fc/sr)
 		hpfAlpha = (float)(1.0 / (1.0 + 2.0 * M_PI * 100.0 / sampleRate));
@@ -574,7 +581,13 @@ private:
 	double  activeDelayMs     = 0.0;   // offset currently programmed into the delay engine
 	int64_t anchorTimestampMs = 0;     // juce::Time::currentTimeMillis() when anchor last set
 	int64_t masterNovAnchorSample = 0; // abs sample pos when master last wrote novelty to SM
-	static constexpr double ANCHOR_MAX_AGE_MS = 30000.0;  // anchor valid for 30 s after LTC loss
+	// Max time the anchor may stand without either a fresh LTC confirmation
+	// or a valid anchored NCC hit.  A coherent audio fallback refreshes the
+	// timestamp each cycle (see fuseLtcAndAudioFallback), so this only fires
+	// when both LTC and NCC have been dark for this long — i.e. the scene
+	// genuinely went silent.  30 s buys a slow source to come back without
+	// losing alignment; beyond that, we fall back to wide re-acquisition.
+	static constexpr double ANCHOR_MAX_AGE_MS = 30000.0;
 
 	// Hysteresis state for d_ms updates in slave SM read.
 	// Large jumps in the computed delay require JUMP_CONFIRMS_NEEDED consecutive

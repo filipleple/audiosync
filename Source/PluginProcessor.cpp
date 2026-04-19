@@ -559,15 +559,15 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 
 	// anchorUsable: age ok AND K_eff fits inside the window so the narrow
 	// ±NARROW_HALF search covers the expected peak with adequate overlap.
-	// With N=400, this supports offsets up to ±369 hops = ±3.69 s.
+	// With N=2000, this supports offsets up to ±1969 hops = ±19.69 s.
 	const bool anchorUsable =
 		anchorAgeOk
 		&& audFallback.hasMasterRef
 		&& std::abs(K_eff) < N - AudioFallbackState::NARROW_HALF - 1;
 
-	// If the anchor is recent but even K_eff is too large for the window
-	// (offset > 3.69 s), hold the LTC value rather than running a wide NCC
-	// that can't reach the true peak.
+	// If the anchor is recent but K_eff exceeds the window (offset > ~19.7 s),
+	// hold the LTC value rather than running a wide NCC that can't reach the
+	// true peak.  Essentially a guardrail — real scenarios should fit.
 	if (anchorAgeOk && !anchorUsable)
 	{
 		audFallback.deltaAudMs = audFallback.anchorMs;
@@ -582,17 +582,17 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 	// ------------------------------------------------------------------
 	// Effective NCC window.
 	//
-	// In anchored mode: use only the most recent ANCHORED_WIN frames (1.2 s)
-	// so the estimator reacts within ~1.2 s after a manual track shift.
-	// The full 4-second buffer is still used for data storage; we just
-	// read a shorter tail from it.
-	//
-	// In wide mode: use the full N frames for ±2 s initial acquisition.
+	// Anchored mode: most-recent ANCHORED_WIN frames (1.2 s) so the
+	// estimator reacts within ~1.2 s after a manual track shift.
+	// Wide mode: most-recent WIDE_WIN frames (4 s) for cold-start acquisition.
+	// The full N-frame novelty ring is held so that the anchored lookup can
+	// reach into deep master history (up to ~20 s) without resizing per-cycle.
 	//
 	// startOff: how many frames from the circular-buffer "oldest" pointer
 	// to skip, so that [startOff, startOff+nccN) are the most-recent nccN frames.
 	// ------------------------------------------------------------------
-	const int nccN    = anchorUsable ? AudioFallbackState::ANCHORED_WIN : N;
+	const int nccN    = anchorUsable ? AudioFallbackState::ANCHORED_WIN
+	                                 : AudioFallbackState::WIDE_WIN;
 	const int startOff = N - nccN;
 
 	// ------------------------------------------------------------------
@@ -811,6 +811,14 @@ void NewProjectAudioProcessor::fuseLtcAndAudioFallback()
 			fusion.selectedMs     = audFallback.deltaAudMs;
 			fusion.selectedConf   = audFallback.confAud;
 			fusion.fallbackActive = true;
+
+			// A coherent anchored NCC hit proves the anchor is still tracking
+			// the true offset, so refresh its timestamp.  This lets us hold
+			// onto a large LTC-captured offset indefinitely as long as audio
+			// correlation stays healthy — the 30 s anchor age limit only runs
+			// down during silence or broken audio, not during normal speech.
+			if (audFallback.lastEstimateAnchored)
+				anchorTimestampMs = juce::Time::currentTimeMillis();
 		}
 		else
 		{
@@ -873,7 +881,7 @@ void NewProjectAudioProcessor::writeMasterSlot()
 	                    + (int64_t)chnl1_in.scnds  * 1000LL
 	                    + (int64_t)chnl1_in.frms   * 1000LL / std::max(1, fps);
 
-	const int N = audFallback.windowFrames;   // 400 at runtime (set by init())
+	const int N = audFallback.windowFrames;   // MASTER_NOV_REF_SIZE at runtime (set by init())
 
 	seqcount_write_begin(m.writeSeq);
 
@@ -1105,7 +1113,7 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 				bool    master_valid_local       = false;
 				int     nov_writePos_local       = 0;
 				int     nov_framesFilled_local   = 0;
-				float   nov_ref_local[400]       = {};
+				float   nov_ref_local[MASTER_NOV_REF_SIZE] = {};
 
 				uint32_t seq1, seq2;
 				do {
