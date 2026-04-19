@@ -23,21 +23,31 @@ Done (parabola fit, ±10 ms → ~±2 ms). Matches §5's "quadratic interpolation
 
 ## What is missing or diverges
 
-### 1. Analysis signal preprocessing (§3) — HIGH IMPACT
+### 1. Analysis signal preprocessing (§3) — ⚠️ PARTIAL
 
 design.md says:
 > downmix → DC blocker / high-pass → band-limit → optional decimation
 > high-pass: 80–120 Hz, speech/general scene band: 150–3500 Hz
 
-What's implemented: raw `ltcSample` (the LTC track, full-band 48 kHz) is fed directly to
-`pushAudioAnalysisSample` in both master and slave mode. This means:
-- The novelty curve is dominated by LTC biphase tone structure (~2.4 kHz burst patterns),
-  not scene transients.
-- Wind, HVAC, codec artifacts all included unfiltered.
-- No HPF.
+**Status (as of current HEAD):** HPF is now applied. A 1-pole IIR HPF at 100 Hz
+(`hpfAlpha` computed from sample rate in `AudioFallbackState::init()`) filters each channel
+before energy accumulation:
 
-Whether this is a bug or an acceptable shortcut depends on whether you have separate scene
-audio to feed in. If not, document it explicitly as a constraint.
+```cpp
+const float h1 = audFallback.applyHPF(ch1, audFallback.hpfPrevX1, audFallback.hpfPrevY1);
+const float h2 = audFallback.applyHPF(ch2, audFallback.hpfPrevX2, audFallback.hpfPrevY2);
+```
+
+Still missing compared to the full design prescription:
+- **Band-pass / low-pass:** no upper-frequency limit; wind, HVAC, codec artefacts above
+  3.5 kHz are included.
+- **Decimation:** analysis runs at full sample rate (44.1 / 48 kHz), not the 12 kHz
+  recommended by design.md. This increases NCC computational cost but has negligible
+  impact in practice given the 10 ms hop granularity.
+- **Scene audio channel separation:** both master and slave feed `ltcSample` as ch1 and
+  the non-LTC channel (scene audio when available, near-silence otherwise) as ch2.
+  When the track is LTC-only, ch2 carries near-silence and the activity gate suppresses
+  NCC updates automatically.
 
 ### 2. Plain NCC on energy novelty instead of GCC-PHAT (§4) — MEDIUM IMPACT
 
@@ -52,40 +62,75 @@ In practice, the novelty approach is more robust to spectral coloration differen
 very different mic positions, which matters here. But GCC-PHAT gives better time resolution
 when audio quality is good.
 
-### 3. No alpha-beta tracker on fallback output (§7) — HIGH IMPACT
+### 3. Alpha-beta tracker on fallback output (§7) — ✅ IMPLEMENTED
 
 design.md says:
 > Do not feed raw estimates to the delay line. Use an alpha-beta filter (α=0.20, β=0.02).
 
-What's implemented: `fusion.selectedMs` (raw NCC output) is fed directly to `targetMs` in the
-same `processBlock` call. No smoothing, no velocity tracking. In `PluginProcessor.cpp`:
+**Status (as of current HEAD):** Fully implemented. `AlphaBetaTracker` is declared in
+`PluginProcessor.h` with `ALPHA = 0.20`, `BETA = 0.02`, and `MAX_VEL_MS_PER_S = 0.20`.
+It is seeded from the last good LTC anchor at the LTC→fallback transition and updated
+every NCC refresh cycle (~200 ms):
 
 ```cpp
-else if (fusion.fallbackActive && fusion.selectedMs != 0.0)
-    targetMs = fusion.selectedMs;  // raw NCC estimate, no smoothing
+// Alpha-beta tracker — updated every NCC refresh cycle (~200 ms).
+if (fusion.source == FusionState::Source::AudioFallback && audFallback.valid
+    && ab.initialized && std::abs(audFallback.deltaAudMs - ab.estMs) > 150.0)
+    ab.seed(audFallback.deltaAudMs);   // large-jump fast path (> 150 ms)
+
+if (ab.initialized)
+{
+    const bool feedMeasured = (fusion.source == FusionState::Source::AudioFallback)
+                               && audFallback.valid;
+    ab.update(audFallback.deltaAudMs, feedMeasured);
+}
 ```
 
-A single bad NCC estimate causes an immediate hard delay jump.
+The `targetMs` derivation now uses `ab.estMs` (the smoothed tracker output) rather than the
+raw NCC estimate.
 
-### 4. No correction-rate limit (§8) — HIGH IMPACT
+### 4. Correction-rate limit (§8) — ✅ IMPLEMENTED
 
 design.md says:
 > This is the single most important tuning parameter for your use case.
 > Limit to 0.05–0.20 ms/s; start at 0.10 ms/s.
 
-What's implemented: nothing. The fallback can move `targetMs` by an arbitrary amount
-per estimation cycle. Moving acoustic sources will cause the NCC to chase acoustic TDOA
-changes that are not recorder drift, destabilizing the applied delay.
+**Status (as of current HEAD):** Implemented inside `AlphaBetaTracker::update()`.
+The velocity term is clamped to ±`MAX_VEL_MS_PER_S` = 0.20 ms/s before being applied:
 
-### 5. No activity gate (§10) — MEDIUM IMPACT
+```cpp
+velMsPerS = std::max(-MAX_VEL_MS_PER_S,
+            std::min( MAX_VEL_MS_PER_S, velMsPerS));
+```
+
+This prevents the fallback from chasing acoustic TDOA changes caused by moving sources.
+
+### 5. Activity gate (§10) — ✅ IMPLEMENTED
 
 design.md says:
 > Hold prediction, keep confidence low, wait for informative audio during silence/noise.
 > Activity gate: short-term RMS ≥ 6–10 dB above tracked noise floor.
 
-What's implemented: NCC runs unconditionally every `refreshEvery=20` hops. The `s1 < 1e-6f`
-early-exit catches complete silence but not low-energy or steady-state content (HVAC, wind,
-the LTC carrier itself in quiet passages).
+**Status (as of current HEAD):** Implemented. `AudioFallbackState` maintains an asymmetric
+per-channel noise-floor follower and an `activityGate` flag:
+
+```cpp
+static constexpr float NOISE_FLOOR_TC_RISE = 0.995f;  // slow rise (~2 s)
+static constexpr float NOISE_FLOOR_TC_FALL = 0.80f;   // fast fall (~150 ms)
+static constexpr float ACTIVITY_GATE_DB    = 8.0f;    // dB above noise floor
+bool  activityGate = false;
+```
+
+In `estimateAudioFallbackOffset()`, the NCC is skipped when the gate is closed:
+
+```cpp
+if (!audFallback.activityGate)
+    return;
+```
+
+The fast fall time constant allows the gate to open quickly (~150–250 ms) after the LTC
+carrier stops, so quieter programme audio can trip it without waiting for the slow rise
+time constant to decay.
 
 ### 6. No velocity / slope tracking (§2, §7) — MEDIUM IMPACT
 
@@ -122,31 +167,30 @@ What's implemented: single broadband path only.
 | design.md §   | What it says                                       | Status                               |
 |---------------|----------------------------------------------------|--------------------------------------|
 | §2 D0 seeding | Seed fallback with last LTC delay at dropout       | ✅ done (anchor system)               |
-| §3 Signal path | HPF + bandpass + optional decimation              | ❌ missing — raw LTC channel used     |
+| §3 Signal path | HPF + bandpass + optional decimation              | ⚠️ partial — HPF @ 100 Hz added; no bandpass or decimation |
 | §4 GCC-PHAT   | GCC-PHAT on band-passed waveform as primary        | ❌ NCC on energy novelty used instead |
-| §4 Limited search | Center on D_pred, narrow range                | ✅ done (anchored mode)               |
+| §4 Limited search | Center on D_pred, narrow range                | ✅ done (anchored mode, K_eff staleness correction) |
 | §5 Two-stage  | Coarse envelope + fine GCC-PHAT                    | ⚠️ partial (wide/narrow dual path)   |
 | §6 Sub-sample | Quadratic peak fit                                 | ✅ done (parabola)                    |
-| §7 Alpha-beta | Don't feed raw estimates to delay line             | ❌ missing — raw fusion output used   |
-| §8 Rate limit | Cap correction at 0.05–0.20 ms/s                  | ❌ missing entirely                   |
+| §7 Alpha-beta | Don't feed raw estimates to delay line             | ✅ done (α=0.20, β=0.02; 150 ms fast-seed path) |
+| §8 Rate limit | Cap correction at 0.05–0.20 ms/s                  | ✅ done (MAX_VEL_MS_PER_S = 0.20)    |
 | §9b Variable delay | Crossfade / ramp on correction               | ❌ missing — hard commit              |
-| §10 Activity gate | Hold on silence / below noise floor          | ❌ missing                            |
+| §10 Activity gate | Hold on silence / below noise floor          | ✅ done (8 dB gate, asymmetric noise follower) |
 | §11 Multi-band | 3-band weighted median                            | ❌ not started                        |
 
 ---
 
-## Recommended implementation order (bang-for-buck)
+## Remaining work (bang-for-buck order)
 
-1. **Alpha-beta tracker** (§7) — small state, big stability gain; prevents one bad NCC hop
-   from slamming the delay line.
-2. **Correction rate limiter** (§8) — five lines of code; critical for the moving-source
-   use case; design.md calls it the single most important tuning parameter.
-3. **Activity gate** (§10) — tracked noise floor per channel; gate NCC updates when
-   signal is too weak to produce a reliable peak.
-4. **Analysis preprocessing** (§3) — HPF + bandpass on scene audio fed to novelty extraction;
-   changes the *meaning* of the fallback (requires deciding whether to use LTC track or a
-   separate scene audio channel).
-5. **GCC-PHAT** (§4) — add as a fine-stage estimator once the analysis path is correct.
-6. **Velocity tracking** (§2/§7) — slope history for long-dropout extrapolation.
-7. **Crossfade on delay correction** (§9b) — audio quality improvement for large corrections.
-8. **Multi-band** (§11) — robustness upgrade for bad camera mics; last.
+Items 1–3 and the HPF portion of item 4 from the original list have been implemented.
+Remaining:
+
+1. **Bandpass filter on analysis input** (§3) — add a low-pass (≤ 3.5 kHz) after the
+   existing HPF @ 100 Hz to exclude wind, HVAC, and codec artefacts. Requires deciding
+   whether to route a separate scene audio channel rather than the LTC track.
+2. **GCC-PHAT** (§4) — add as a fine-stage estimator once the analysis path is correct.
+3. **Velocity / slope tracking** (§2/§7) — slope history from last 1 s of LTC delays for
+   long-dropout extrapolation beyond the current anchor-hold behaviour.
+4. **Crossfade on delay correction** (§9b) — audio quality improvement for large corrections;
+   replaces the current hard-commit rebuild.
+5. **Multi-band** (§11) — 3-band weighted-median robustness upgrade; lowest priority.
