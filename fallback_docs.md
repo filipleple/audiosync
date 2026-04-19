@@ -29,6 +29,10 @@ the Q_LTC windowed quality metrics — those are in the documents above.
    - 5.2 [Stability](#52-stability)
    - 5.3 [Combined Confidence](#53-combined-confidence)
    - 5.4 [Validity Gate](#54-validity-gate)
+5a. [HPF Preprocessing](#5a-hpf-preprocessing)
+5b. [Activity Gate](#5b-activity-gate)
+5c. [Anchored NCC Mode](#5c-anchored-ncc-mode)
+5d. [Alpha-Beta Tracker](#5d-alpha-beta-tracker)
 6. [Fusion Policy](#6-fusion-policy)
    - 6.1 [Source Selection Logic](#61-source-selection-logic)
    - 6.2 [Hold-on-Abstain Behaviour](#62-hold-on-abstain-behaviour)
@@ -75,21 +79,29 @@ the fallback estimate to the delay engine when LTC fails.
 ```
 Audio input (per sample, both channels)
          │
-         ├─► handleTimecode()          LTC path (existing)
+         ├─► handleTimecode()             LTC path
          │        │
          │        └─► Q_LTC, ltc_state, d_ms
+         │                │
+         │                └─► anchor update (anchorMs, anchorHops)
          │
-         └─► pushAudioAnalysisSample() Audio fallback path (new)
+         └─► HPF (100 Hz, 1-pole IIR)    Audio fallback path
                   │
                   │  per-hop (every 10 ms)
                   ▼
-             energy accumulation → novelty[n] = max(0, E[n] - E[n-1])
+             energy accumulation
+             noise-floor follower → activityGate (8 dB above floor)
+             novelty[n] = max(0, E[n] - E[n-1])
                   │
+                  │ [gate closed → skip NCC, alpha-beta coasts]
+                  │ [gate open]
                   │  every 200 ms (20 hops)
                   ▼
              estimateAudioFallbackOffset()
+               ├─ anchored mode (anchor fresh): ±NARROW_HALF=30 hops (±300 ms)
+               │    K_eff staleness correction aligns master/slave rings
+               └─ wide mode (cold-start):       ±lagRange=200 hops (±2 s)
                   │
-                  ├─► NCC over ±1.5 s lag range
                   ├─► bestLag, peakCorr, secondPeak
                   ├─► prominence, stableCount, stability
                   └─► confAud, deltaAudMs, valid
@@ -101,9 +113,9 @@ Audio input (per sample, both channels)
                   └─► selectedMs, selectedConf, fallbackActive
                   │
                   ▼
-             processBlock() delay engine
+             AlphaBetaTracker (α=0.20, β=0.02, cap 0.20 ms/s)
                   │
-                  └─► targetMs → delay_size, activeDelayMs
+                  └─► ab.estMs → targetMs → delay_size, activeDelayMs
 ```
 
 ---
@@ -178,16 +190,26 @@ The constant C cancels in the difference. The novelty is driven entirely by P.
 
 ### 3.4 Circular Buffer Organisation
 
-Each channel maintains a circular novelty buffer of length `windowFrames = 200` (covering 2
-seconds at 10 ms hops). The write pointer `writePos` advances modulo `windowFrames` on each hop.
+Each channel maintains a circular novelty buffer of length `windowFrames`. The write pointer
+`writePos` advances modulo `windowFrames` on each hop.
 
 ```
 novelty1[writePos % W] = nov1
 writePos = (writePos + 1) % W
 ```
 
-The buffer fills to capacity over the first 2 seconds. `framesFilled` is clamped at
-`windowFrames`; the estimator does not run until `framesFilled == windowFrames`.
+`windowFrames` is set in `init()` to `MASTER_NOV_REF_SIZE = 2000` (20 seconds at 10 ms/hop)
+so that the anchored NCC can reach deep into history (up to ±19.69 s) without resizing.
+The NCC itself only reads a sub-window of this ring:
+
+- **Anchored mode** (`anchorUsable == true`): `ANCHORED_WIN = 120` frames (1.2 s)
+- **Wide mode** (cold-start): `WIDE_WIN = 400` frames (4 s)
+
+The full 2000-frame ring is held to support deep anchor offsets; only the sub-window is
+linearised for each NCC run.
+
+The buffer is considered ready once `framesFilled >= ANCHORED_WIN` (anchored) or
+`framesFilled >= WIDE_WIN` (wide). `framesFilled` is clamped at `windowFrames`.
 
 Pre-allocated linearisation scratch buffers `linBuf1`, `linBuf2` (size `windowFrames`) avoid
 heap allocation inside the audio thread at estimation time.
@@ -228,7 +250,13 @@ Normalisation by σ₁σ₂ confines NCC(τ) to [-1, 1] and makes the result ind
 absolute energy level of the programme material. This is important because the two channels may
 have different recording gains.
 
-The search range is τ ∈ [-L, +L] where `lagRange = 150` hops = ±1.5 seconds. The best lag is:
+The search range depends on mode:
+
+- **Wide mode** (cold-start, no fresh anchor): `lagRange = 200` hops = ±2 seconds.
+- **Anchored mode** (anchor fresh and K_eff in range): `NARROW_HALF = 30` hops = ±300 ms,
+  centred on the K_eff-corrected anchor offset.
+
+The best lag is:
 
 ```
 τ* = argmax_{τ ∈ [-L, L]} NCC(τ)
@@ -278,16 +306,24 @@ events), the estimator exits without updating: `valid = false`, `stableCount = 0
 
 ### 4.3 Computational Cost
 
-The NCC inner loop runs `2L + 1 = 301` lags, each over at most N = 200 samples:
+The NCC inner loop cost depends on the active mode:
+
+| Mode | Lags | Window frames | MACs per NCC run |
+|---|---|---|---|
+| Anchored | 2×30+1 = 61 | 120 | 61 × 120 = 7,320 |
+| Wide | 2×200+1 = 401 | 400 | 401 × 400 = 160,400 |
+
+Both run once every `refreshEvery = 20` hops = 200 ms. Worst-case (wide mode):
 ```
-301 × 200 = 60,200 multiply-accumulate operations
+160,400 / 0.200 s ≈ 802,000 MAC/s
 ```
-This runs once every `refreshEvery = 20` hops = 200 ms. The mean rate is therefore:
-```
-60,200 / 0.200 s ≈ 301,000 MAC/s
-```
-At 44100 Hz, the audio thread budget is approximately 44,100 MACs/sample with no other
-processing. The fallback estimation uses less than 1% of the audio thread budget.
+At 44100 Hz the audio thread budget is approximately 44,100 MACs/sample. Wide mode uses
+under 2% of the budget; anchored mode under 0.1%.
+
+No dynamic allocation occurs at estimation time. All buffers are allocated in `init()`.
+
+The anchored mode (the common case once a valid LTC lock has been established) is
+significantly cheaper: ~22× fewer MACs than wide mode.
 
 No dynamic allocation occurs at estimation time. The only heap-allocated structures
 (`novelty1`, `novelty2`, `linBuf1`, `linBuf2`) are allocated during `init()` which is called
@@ -388,6 +424,181 @@ stableCount ≥ 3   AND   conf_AUD > 0.3
 This requires at least 600 ms of consistent evidence before the fallback is considered
 trustworthy. The fusion uses `valid` as a precondition and separately applies `conf_AUD > 0.4`
 as a threshold for switching to the fallback source.
+
+---
+
+## 5a. HPF Preprocessing
+
+Before energy accumulation, each channel sample passes through a 1-pole IIR high-pass filter
+with a 100 Hz cutoff:
+
+```cpp
+float applyHPF(float x, float& prevX, float& prevY) const noexcept
+{
+    float y = hpfAlpha * (prevY + x - prevX);
+    prevX = x; prevY = y;
+    return y;
+}
+```
+
+The coefficient `hpfAlpha = 1 / (1 + 2π · 100 / sampleRate)` is computed once in `init()`.
+At 48 kHz: `hpfAlpha ≈ 0.9872`.
+
+**Purpose:** The LTC carrier contributes a near-constant energy level below ~2.4 kHz. Without
+HPF, the noise floor estimate is inflated by the carrier, and the activity gate opens later
+than necessary once the LTC stops. The 100 Hz pole removes DC and sub-bass content without
+affecting the speech/transient band used by the novelty estimator.
+
+The HPF does not band-limit the upper end — wind, HVAC artefacts, and codec noise above
+3.5 kHz are still included. A low-pass stage would improve selectivity but is not yet
+implemented (see `what_was_missing.md`).
+
+---
+
+## 5b. Activity Gate
+
+The activity gate suppresses NCC computation during silence, very-low-level content, or
+steady-state noise (e.g. the LTC carrier alone). Without it, the NCC would run on flat
+novelty curves and produce random lag estimates that poison the stability counter.
+
+### Noise Floor Follower
+
+Each channel maintains an asymmetric exponential follower on the HPF-filtered energy `e`:
+
+```cpp
+const float tc = (e < noiseFloor) ? NOISE_FLOOR_TC_FALL : NOISE_FLOOR_TC_RISE;
+noiseFloor = tc * noiseFloor + (1 - tc) * e;
+```
+
+| Constant | Value | Time constant at 10 ms/hop |
+|---|---|---|
+| `NOISE_FLOOR_TC_RISE` | 0.995 | ~2 s |
+| `NOISE_FLOOR_TC_FALL` | 0.80 | ~45 ms |
+
+**Rationale for asymmetry:** The rise time constant is slow so the floor doesn't flutter
+up during brief loud events. The fall time constant is fast (≈ 45 ms) so that when the
+LTC carrier stops, the noise floor drops quickly to match the quieter programme audio,
+allowing the gate to open within ~150–250 ms rather than waiting seconds.
+
+### Gate Decision
+
+At each hop boundary, `activityGate` is set:
+
+```cpp
+const float gate_thresh = noiseFloor * std::pow(10.0f, ACTIVITY_GATE_DB / 10.0f);
+activityGate = (e1 > gate_thresh || e2 > gate_thresh);
+```
+
+`ACTIVITY_GATE_DB = 8.0 dB`. If neither channel exceeds the floor by 8 dB, the NCC is
+skipped and the alpha-beta tracker coasts on its current velocity estimate.
+
+---
+
+## 5c. Anchored NCC Mode
+
+When a valid LTC anchor exists and is recent enough, the NCC search is constrained to
+a narrow window centred on the anchor. This reduces search cost by ~22× and prevents
+the estimator from locking onto spurious lags far from the expected offset.
+
+### Anchor Lifecycle
+
+- **Set:** whenever `d_ms` is committed by the LTC decoder (including the hysteresis
+  guard, so only confirmed values set the anchor).
+- **Age tracking:** `anchorAgeMs` increments every processBlock call. If it exceeds
+  `ANCHOR_MAX_AGE_MS = 30,000 ms`, the anchor is considered stale.
+- **Cleared:** on `prepareToPlay()` / `reset()`.
+
+### K_eff Staleness Correction (Slave Mode)
+
+The master writes its novelty ring to shared memory approximately every 100 ms. The slave
+reads it on its own independent 100 ms timer. This introduces up to ~200 ms of relative
+misalignment between the master and slave novelty time axes.
+
+`K_eff` compensates by pre-shifting the master reference before the NCC:
+
+```
+K_eff = anchorHops - timeDeltaHops
+```
+
+where `timeDeltaHops = round((slaveSampleCount - masterSampleCount) / hopSamples)`.
+
+- `K_eff > 0`: slave is late relative to master → shift master's past forward.
+- `K_eff < 0`: slave is ahead → shift slave's past backward.
+
+Exactly one of `masterShift` or `slaveShift` is non-zero per NCC run.
+
+### Mode Selection
+
+```
+anchorAgeOk  = (anchorAgeMs < ANCHOR_MAX_AGE_MS)
+anchorUsable = anchorAgeOk
+            && hasMasterRef
+            && |K_eff| < windowFrames - NARROW_HALF - 1
+            && masterFramesFilled >= ANCHORED_WIN + masterShift
+            && framesFilled       >= ANCHORED_WIN + slaveShift
+
+if (anchorAgeOk && !anchorUsable):
+    // Anchor fresh but history too short → hold anchor, confAud = 0.8
+    deltaAudMs = anchorMs
+    return
+
+nccN    = anchorUsable ? ANCHORED_WIN : WIDE_WIN
+lagHalf = anchorUsable ? NARROW_HALF  : lagRange
+```
+
+When the anchor is age-ok but the history buffer isn't deep enough yet (e.g., right after
+startup), the estimator returns the anchor value directly with `confAud = 0.8` rather than
+running a potentially bogus wide NCC.
+
+---
+
+## 5d. Alpha-Beta Tracker
+
+The raw NCC estimate (`deltaAudMs`) is not fed directly to the delay engine. It passes
+through an alpha-beta tracker that smooths position noise and enforces a velocity cap.
+
+### State and Parameters
+
+```cpp
+struct AlphaBetaTracker {
+    static constexpr double ALPHA            = 0.20;
+    static constexpr double BETA             = 0.02;
+    static constexpr double MAX_VEL_MS_PER_S = 0.20;
+
+    double estMs    = 0.0;   // smoothed position estimate
+    double velMsPerS = 0.0;  // velocity estimate
+    bool   initialized = false;
+};
+```
+
+### Update Equation
+
+Called once per NCC refresh cycle (~200 ms), with `dtS ≈ 0.200`:
+
+```
+residual  = measured - estMs
+estMs    += ALPHA * residual
+velMsPerS = clamp(velMsPerS + BETA * residual / dtS,
+                  -MAX_VEL_MS_PER_S, +MAX_VEL_MS_PER_S)
+```
+
+When `feedMeasured = false` (gate closed or fusion in LTC mode), the update coasts:
+
+```
+estMs += velMsPerS * dtS
+```
+
+### Seeding
+
+`ab.seed(value)` sets `estMs = value`, `velMsPerS = 0`, `initialized = true`. It is called:
+
+1. At the first LTC→fallback transition (seeds from last good `d_ms`).
+2. When the NCC estimate jumps more than 150 ms from the tracker's current `estMs`
+   (large-jump fast path — handles manual track shifts in the DAW).
+
+The 150 ms threshold is above normal NCC jitter (±10 ms one hop) but below a typical
+manual re-sync operation, so spurious NCC outliers are absorbed by the tracker rather
+than triggering a re-seed.
 
 ---
 
@@ -539,28 +750,71 @@ Declared in `PluginProcessor.h` as a plain struct before `NewProjectAudioProcess
 | Field | Type | Value (44100 Hz) | Description |
 |---|---|---|---|
 | `hopSamples` | `int` | 441 | Samples per energy accumulation hop (10 ms) |
-| `windowFrames` | `int` | 200 | NCC analysis window length in hops (2 s) |
-| `lagRange` | `int` | 150 | NCC search range in hops (±1.5 s) |
+| `windowFrames` | `int` | 2000 | Full novelty ring length (20 s; = MASTER_NOV_REF_SIZE) |
+| `lagRange` | `int` | 200 | Wide NCC search range in hops (±2 s) |
 | `refreshEvery` | `int` | 20 | Hops between NCC re-computations (200 ms) |
 | `hopMs` | `double` | 10.0 | Hop duration in ms (used for lag→ms conversion) |
+| `hpfAlpha` | `float` | 0.9872 @ 48 kHz | 1-pole HPF coefficient; cutoff 100 Hz; computed in `init()` |
+
+**Constants (compile-time, not changed by `init()`):**
+
+| Constant | Value | Description |
+|---|---|---|
+| `NARROW_HALF` | 30 hops | Half-width of anchored NCC search (±300 ms) |
+| `ANCHORED_WIN` | 120 frames | NCC window used in anchored mode (1.2 s) |
+| `WIDE_WIN` | 400 frames | NCC window used in wide/cold-start mode (4 s) |
+| `NOISE_FLOOR_TC_RISE` | 0.995 | Noise-floor follower slow-rise time constant (~2 s) |
+| `NOISE_FLOOR_TC_FALL` | 0.80 | Noise-floor follower fast-fall time constant (~150 ms) |
+| `ACTIVITY_GATE_DB` | 8.0 dB | Signal must exceed noise floor by this to open gate |
 
 **Per-hop accumulators (reset at each hop boundary):**
 
 | Field | Type | Description |
 |---|---|---|
-| `energyAcc1/2` | `float` | Sum of x² over current hop, both channels |
+| `energyAcc1/2` | `float` | Sum of HPF-filtered x² over current hop, both channels |
 | `prevEnergy1/2` | `float` | Mean energy of previous hop (for novelty difference) |
 | `hopSampleCounter` | `int` | Samples elapsed in current hop |
 | `hopsSinceRefresh` | `int` | Hops elapsed since last NCC computation |
+
+**HPF state:**
+
+| Field | Type | Description |
+|---|---|---|
+| `hpfPrevX1/2` | `float` | Previous input sample for per-channel 1-pole HPF |
+| `hpfPrevY1/2` | `float` | Previous output sample for per-channel 1-pole HPF |
+
+**Noise floor and activity gate:**
+
+| Field | Type | Description |
+|---|---|---|
+| `noiseFloor1/2` | `float` | Exponentially tracked per-channel noise energy floor |
+| `activityGate` | `bool` | True when either channel exceeds ACTIVITY_GATE_DB above floor |
 
 **Novelty buffers:**
 
 | Field | Type | Description |
 |---|---|---|
-| `novelty1/2` | `vector<float>` | Circular novelty buffers, length `windowFrames` |
+| `novelty1/2` | `vector<float>` | Circular novelty buffers, length `windowFrames` (2000) |
 | `linBuf1/2` | `vector<float>` | Pre-allocated scratch for NCC linearisation |
 | `writePos` | `int` | Circular buffer write pointer |
-| `framesFilled` | `int` | Number of valid hops accumulated; clamped at `windowFrames` |
+| `framesFilled` | `int` | Valid hops accumulated; clamped at `windowFrames` |
+
+**Master reference (slave mode only):**
+
+| Field | Type | Description |
+|---|---|---|
+| `masterNoveltyRef` | `vector<float>` | Linearised master novelty copied from shared memory every ~100 ms |
+| `hasMasterRef` | `bool` | True once a valid master novelty snapshot has been received |
+| `masterFramesFilled` | `int` | Number of valid frames in the master reference snapshot |
+
+**Anchor state:**
+
+| Field | Type | Description |
+|---|---|---|
+| `hasAnchor` | `bool` | True when at least one LTC-confirmed anchor exists |
+| `anchorMs` | `double` | Last LTC-confirmed offset used to centre the anchored NCC search |
+| `anchorHops` | `int` | `round(anchorMs / hopMs)`, cached to avoid per-call division |
+| `lastEstimateAnchored` | `bool` | Set by `estimateAudioFallbackOffset`; read by `fuseLtcAndAudioFallback` |
 
 **Estimation results (written by `estimateAudioFallbackOffset`):**
 
@@ -595,29 +849,39 @@ updated every 0.1 s in the diagnostic block), not `fusion.source` directly.
 
 ```
 per sample:
-    handle_const_delay(write1[i], chnl1)          // existing: feed historical buffer
-    processTimeCode(write1[i], chnl1_in, ...)      // existing: LTC decode CH1
-    processTimeCode(write2[i], chnl2_in, ...)      // existing: LTC decode CH2
-    pushAudioAnalysisSample(write1[i], write2[i])  // new: audio fallback, RAW input
-    d_ms = calc_delay(chnl1_in, chnl2_in, fps)     // existing: LTC offset
-    [LTC jump detection]
-    targetMs = [fusion-derived, see §7.1]          // new: steering value
-    [rebuild check, see §7.2]
-    [delay engine: now uses targetMs, not d_ms]    // modified
-    delay(write2, i, chnl2)  or  delay(write1, .) // existing mechanism, new target
+    handle_const_delay(write1[i], chnl1)           // feed historical buffer (CH1)
+    processTimeCode(ltcSample, chnl1_in, ...)      // LTC decode on LTC channel
+      → Q_LTC update, anchor refresh (anchorMs, anchorHops)
+    pushAudioAnalysisSample(ltcSample, sceneSample)
+      // ltcSample  = LTC-carrying channel (raw, undelayed)
+      // sceneSample = non-LTC channel (scene audio if available, else ~silence)
+      // internally: HPF applied to both channels before energy accumulation
+      // internally: noise-floor follower → activityGate update
+    d_ms = calc_delay(chnl1_in, chnl2_in, fps)    // LTC offset (hysteresis guarded)
+    [LTC jump detection + d_ms_pending hysteresis]
+    targetMs = ab.estMs (or d_ms if ab not yet seeded) // alpha-beta smoothed
+    [rebuild check: |targetMs - activeDelayMs| > 2 frames → clear FIFOs]
+    delay(write2, i, chnl2) or delay(write1, .) // delay engine uses targetMs
 
 every ~200 ms (inside pushAudioAnalysisSample, at hop boundary):
+    [if activityGate closed → return, alpha-beta coasts]
     estimateAudioFallbackOffset()
+      // anchored mode if anchorUsable, else wide mode
+      // K_eff corrects for SM read-staleness in slave mode
     fuseLtcAndAudioFallback()
+    if (source == AudioFallback && large jump > 150 ms): ab.seed(deltaAudMs)
+    ab.update(deltaAudMs, feedMeasured)            // alpha-beta step
 
-every ~0.1 s (existing diagnostic block):
+every ~0.1 s (diagnostic block):
     copy fusion fields to public aud_* members
+    write master novelty snapshot to shared memory (master mode)
+    read master novelty snapshot from shared memory (slave mode)
 ```
 
 `pushAudioAnalysisSample` must be called **before** `delay()` modifies the write pointers.
-After `delay(write2, i, chnl2)`, `write2[i]` contains the delayed sample, not the original
-input. The audio fallback is intended to track the raw inter-channel delay of the input
-signals, not the compensated output.
+The fallback operates on raw, undelayed input samples — the K_eff anchor mechanism in
+`estimateAudioFallbackOffset` accounts for the inter-track time offset mathematically
+rather than by buffering delayed audio.
 
 ### 9.2 Timing Budget
 
@@ -640,13 +904,21 @@ per-sample processing.
 
 | Parameter | Location | Default | Effect |
 |---|---|---|---|
-| `hopMs` / `hopSamples` | `AudioFallbackState::init()` | 10 ms | Lag resolution and novelty time granularity. Smaller = finer lag grid but more NCC lags to search. |
-| `windowFrames` | `AudioFallbackState::init()` | 200 (2 s) | Duration of NCC analysis window. Longer = smoother, more latency to first valid estimate. |
-| `lagRange` | `AudioFallbackState::init()` | 150 (±1.5 s) | Maximum detectable inter-channel delay. Must be less than `windowFrames/2` or the boundary-clipped NCC will be biased for large lags. |
+| `hopMs` / `hopSamples` | `AudioFallbackState::init()` | 10 ms | Lag resolution and novelty time granularity. Smaller = finer lag grid but more NCC lags. |
+| `windowFrames` | `AudioFallbackState::init()` | 2000 (20 s ring) | Full novelty ring; NCC sub-windows are ANCHORED_WIN=120 or WIDE_WIN=400. |
+| `lagRange` | `AudioFallbackState::init()` | 200 (±2 s wide) | Wide-mode maximum detectable delay. Anchored mode uses NARROW_HALF=30 (±300 ms). |
+| `NARROW_HALF` | compile-time constant | 30 hops (±300 ms) | Half-width of anchored NCC search. Must be < ANCHORED_WIN/2. |
+| `ANCHORED_WIN` | compile-time constant | 120 frames (1.2 s) | NCC window in anchored mode. Controls how quickly the estimator reacts to a manual track shift. |
+| `WIDE_WIN` | compile-time constant | 400 frames (4 s) | NCC window in wide mode. |
+| `ANCHOR_MAX_AGE_MS` | compile-time constant | 30,000 ms | How long an anchor remains valid without LTC confirmation. Beyond this the estimator falls back to wide mode. |
 | `refreshEvery` | `AudioFallbackState::init()` | 20 (200 ms) | NCC re-computation interval. Lower = faster tracking, higher CPU. |
-| conf_AUD threshold | `fuseLtcAndAudioFallback()` | 0.4 | Minimum confidence to switch from LTC to audio fallback. Raise to require stronger evidence; lower to switch earlier on degraded LTC. |
-| `stableCount` gate | `estimateAudioFallbackOffset()` | ≥ 3 | Number of consecutive consistent estimates before `valid = true`. 3 × 200 ms = 600 ms minimum convergence time. |
-| stability agreement | `estimateAudioFallbackOffset()` | ±2 hops | Two estimates that differ by ≤ 20 ms are considered consistent. Covers NCC grid quantisation error (±10 ms) plus one hop of noise. |
+| `ACTIVITY_GATE_DB` | compile-time constant | 8 dB | Signal must exceed tracked noise floor by this margin for the NCC to run. |
+| `ALPHA` | `AlphaBetaTracker` | 0.20 | Alpha-beta position gain. Higher = faster response but more jitter. |
+| `BETA` | `AlphaBetaTracker` | 0.02 | Alpha-beta velocity gain. Higher = faster velocity adaptation. |
+| `MAX_VEL_MS_PER_S` | `AlphaBetaTracker` | 0.20 ms/s | Velocity cap; prevents tracker from following moving acoustic sources. |
+| conf_AUD threshold | `fuseLtcAndAudioFallback()` | 0.4 | Minimum confidence to switch from LTC to audio fallback. |
+| `stableCount` gate | `estimateAudioFallbackOffset()` | ≥ 3 | Consecutive consistent estimates required before `valid = true` (600 ms minimum). |
+| stability agreement | `estimateAudioFallbackOffset()` | ±2 hops | Agreement window for stability counting. Covers ±10 ms NCC grid plus one hop of noise. |
 | rebuild threshold | `processBlock()` | 2 frames | `|targetMs - activeDelayMs|` must exceed this to trigger a delay engine rebuild. |
 | drift threshold | diagnostic block | 5.0 ms/s × 3 windows | Inherited from Q_LTC layer; see `quality_scoring.md` for derivation. |
 

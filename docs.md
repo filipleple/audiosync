@@ -96,14 +96,16 @@ One private member function:
 
 ## 3. The `tc_data` Class
 
-`tc_data` is a plain data class (no virtual methods) that holds all mutable state for a single LTC decoder instance. Four instances are maintained by the processor:
+`tc_data` is a plain data class (no virtual methods) that holds all mutable state for a single LTC decoder instance. In the current master-slave architecture two instances are used per processor:
 
 | Instance | Purpose |
 |---|---|
-| `chnl1_in` | Decode input LTC on channel 1 |
-| `chnl2_in` | Decode input LTC on channel 2 |
-| `chnl1` | Decode output LTC on channel 1 (after delay is applied) |
-| `chnl2` | Decode output LTC on channel 2 (after delay is applied) |
+| `chnl1_in` | Decode the LTC-carrying input channel |
+| `chnl2_in` | Decode the secondary input channel (used for two-channel single-instance mode) |
+
+> **Note:** the earlier v1.4 description of four instances (`chnl1_in`, `chnl2_in`, `chnl1`,
+> `chnl2`) no longer reflects the current code. The output-side `chnl1`/`chnl2` decoder pair
+> was removed when the delay engine was refactored into the master-slave architecture.
 
 ### Fields
 
@@ -161,6 +163,26 @@ One private member function:
 | `active_delay` | `bool` | True once this channel has been designated as the one to be delayed |
 | `const_buf` | `std::deque<float>` | Ring buffer of the last 500,000 input samples (~11.3 s at 44100 Hz) |
 | `const_buf_size` | `const int` | Fixed capacity of `const_buf` (500,000) |
+
+#### Quality Scoring Fields (added post-v1.4)
+
+These fields are computed by the windowed quality scorer that runs inside `handleTimecode()`
+every `W_SIZE` frames. See `quality_scoring.md` for full derivation.
+
+| Field | Type | Description |
+|---|---|---|
+| `Q_LTC` | `float` | Composite quality score [0.0–1.0]; weighted sum of 7 sub-metrics |
+| `ltc_state` | `LTCState` | Enum: `FAIL` (Q<0.5), `SUSPECT` (0.5–0.8), `VALID` (>0.8) |
+| `fallback_requested` | `bool` | True when `ltc_state == FAIL`; signals fusion layer |
+| `q_lock_ratio` | `float` | Fraction of measurement window where sync was held |
+| `q_continuity_score` | `float` | Smoothed inter-frame timecode continuity |
+| `q_pulse_consistency` | `float` | Pulse-width variance relative to expected half-pulse |
+| `q_transition_reliability` | `float` | Fraction of transitions that fell in expected timing window |
+| `q_signal_strength` | `float` | Normalised threshold relative to the floor |
+| `q_sync_word_rate` | `float` | Fraction of frames with correct sync word |
+| `q_fps_plausibility` | `float` | How closely measured FPS matches the configured rate |
+| `estimated_fps` | `float` | FPS measured from half-pulse width; used for plausibility metric |
+| `rejected_frames_count` | `int` | Count of frames rejected by the scorer in the current window |
 
 ### `clear()` Method
 
@@ -685,6 +707,13 @@ The new sample is appended to the back of the deque and the oldest sample is tak
 
 ## 9. `processBlock()` — Main Audio Processing Loop
 
+> **This section describes the v1.4 single-instance design and is significantly outdated.**
+> The current `processBlock()` implements a master-slave multi-track architecture with audio
+> fallback, alpha-beta smoothing, anchored NCC, and hysteresis on large delay jumps.
+> For the current processing loop, see `fallback_docs.md §9` and
+> `master-slave-architecture.md`. The sub-sections below are retained as historical reference
+> for the core `handleTimecode` → `calc_delay` → `delay()` pipeline, which is still present.
+
 ```cpp
 void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                              juce::MidiBuffer& midiMessages)
@@ -835,6 +864,11 @@ When delay is inactive:
 ---
 
 ## 10. GUI — `PluginEditor`
+
+> **This section describes the v1.4 UI and is outdated.** The UI was completely redesigned
+> into a dark-themed 4-card layout (header, signal, delay sync, diagnostics). See
+> `ui_redesign.md` for the new layout specification. The absolute-pixel layout described
+> below no longer exists in `PluginEditor.cpp`.
 
 `NewProjectAudioProcessorEditor` extends `juce::AudioProcessorEditor` and `juce::Timer`. The editor window is fixed at **400 × 300 pixels**.
 
@@ -993,37 +1027,48 @@ Key build-time settings:
 
 ## 13. Known Limitations and Design Notes
 
-### Hardcoded Sample Rate
+### ~~Hardcoded Sample Rate~~ — FIXED
 
-`processTimeCode()` defaults `srate` to `44100`. The per-sample loop always passes the default:
-```cpp
-processTimeCode(write1[i], chnl1_in, input_ch1, i);  // srate = 44100 (default)
-```
-If the host runs at 48000 Hz or 96000 Hz, `pulsesize` will be miscalculated, causing the bit decoder to fail. Correct behavior requires passing `getSampleRate()` from `prepareToPlay()`.
+~~`processTimeCode()` defaults `srate` to `44100`.~~ The current implementation passes
+`currentSampleRate` (stored from `prepareToPlay()`) to all decoder calls. The plugin
+operates correctly at 44100, 48000, 96000 Hz and other DAW sample rates.
 
-### Hardcoded Delay Sample Rate
+### ~~Hardcoded Delay Sample Rate~~ — FIXED
 
-In the delay engine:
-```cpp
-chnl2.delay_size = std::floor(d_ms / 1000 * 44100);
-```
-Again hardcoded to 44100 Hz. At 48 kHz the delay would be 91.9% of the correct length.
+~~The delay engine hardcoded `44100` in `delay_size` computation.~~ The current code derives
+`delay_size` from `currentSampleRate`, so delay accuracy is maintained at any sample rate.
 
-### `delay_frames` Global Variable
+### ~~`delay_frames` Global Variable~~ — FIXED
 
-`delay_frames` is a file-scope `static int`. If multiple instances of the plugin are loaded simultaneously (common in a DAW), they share this variable, causing cross-instance interference. It should be a member of `NewProjectAudioProcessor`.
+~~`delay_frames` was a file-scope `static int` causing cross-instance interference.~~
+Multi-instance operation is now supported via the master-slave IPC architecture
+(`SharedGroupMemory.h`). Per-instance state is correctly encapsulated.
 
-### Thread Safety of Display Strings
+### Thread Safety of Display Strings — MITIGATED
 
-`tc`, `output_c2`, `input_ch1`, `input_ch2`, `delay_ms`, `o_delay_ms`, `d_ms`, `by_slider` are written by the audio thread (in `processBlock()`) and read by the GUI thread (in `timerCallback()`). No synchronization primitive protects these accesses. The correct approach would be an atomic type or a lock-free FIFO.
+The audio thread writes diagnostic values (`d_ms`, `delay_ms`, etc.) and the GUI timer
+reads them. The mitigation is a "diagnostic copy" pattern: the audio thread writes to
+`aud_*` public fields in a ~100 ms diagnostic block (not per-sample), reducing the window
+for torn reads. This is not a formally race-free design, but in practice the values are
+`double`/`float`/`int` and incoherent reads produce only momentarily garbled display text.
 
-### `delay_size` Frozen at First Activation
+### `delay_size` Tracking — IMPROVED
 
-Once `delay_size` is set (when first non-zero), it is never updated during a delay session. If `d_ms` changes mid-session (e.g., LTC re-locks with a slightly different offset), the delay length will not follow. A `chnl1.clear()` / `chnl2.clear()` call (triggered by a >1 frame jump) is the only way to re-measure and reset.
+The v1.4 freeze-on-first-activation behaviour has been replaced by a rebuild-on-shift
+mechanism (`rebuildThreshMs = 2 frames`): if `targetMs` drifts more than 2 frames from
+`activeDelayMs`, the delay FIFOs are cleared and recommitted from the new target.
 
-### `const_buf` Only for Channel 1
+### `const_buf` Only for Channel 1 — UNCHANGED
 
-The pre-fill historical buffer (`handle_const_delay`) is only called for `chnl1`. If channel 2 needs to be delayed (i.e., `d_ms > 0`), it uses the standard FIFO with an initial silence period. The historical buffer optimization is asymmetric.
+The pre-fill historical buffer (`handle_const_delay`) is still only fed from channel 1.
+Channel 2 delay uses the standard FIFO with an initial silence period. This asymmetry is
+acceptable because in master-slave mode the master track always passes through undelayed.
+
+### User Bits and Drop-Frame Flag Ignored — UNCHANGED
+
+The decoder reads only HH:MM:SS:FF. Drop-frame timecode (29.97 fps), user bits, and flag
+bits are not handled. The 29.97 fps rate is present in the `frates[]` table but is not
+wired to the UI.
 
 ### User Bits and Drop-Frame Flag Ignored
 
