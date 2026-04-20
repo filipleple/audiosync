@@ -17,7 +17,7 @@
     Windows:                CreateFileMappingA + MapViewOfFile
 
     The shared region is named  "/AUTOSYNC2_<groupName>"  on POSIX  (appears
-    under /dev/shm/ on Linux) and  "Global\AUTOSYNC2_<groupName>"  on Windows.
+    under /dev/shm/ on Linux) and  "Local\AUTOSYNC2_<groupName>"  on Windows.
     It persists until the OS is rebooted or until explicitly unlinked — this is
     intentional so that a plugin restart attaches to the existing region without
     losing data from other instances.  The "2" suffix guards against attaching
@@ -232,7 +232,7 @@ private:
 
     bool openWindows(const std::string& groupName)
     {
-        const std::string name = "Global\\AUTOSYNC2_" + groupName;
+        const std::string name = "Local\\AUTOSYNC2_" + groupName;
 
         // Try to attach to an existing mapping first (preserves content when
         // other instances are already running).

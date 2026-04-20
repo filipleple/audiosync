@@ -337,7 +337,7 @@ struct AudioFallbackState
 		lagRange     = 200;   // ±2 s wide search
 
 		// HPF: 1-pole IIR, cutoff 100 Hz.  alpha = 1 / (1 + 2π·fc/sr)
-		hpfAlpha = (float)(1.0 / (1.0 + 2.0 * M_PI * 100.0 / sampleRate));
+		hpfAlpha = (float)(1.0 / (1.0 + 2.0 * 3.14159265358979323846 * 100.0 / sampleRate));
 		refreshEvery = 20;
 		novelty1.assign(windowFrames, 0.0f);
 		novelty2.assign(windowFrames, 0.0f);

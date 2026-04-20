@@ -39,6 +39,8 @@ target_compile_definitions(TsimafeiPlugin PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_STRICT_REFCOUNTEDPOINTER=1
     JUCE_DISPLAY_SPLASH_SCREEN=1
+    PRIVATE
+    NOMINMAX
 )
 
 target_link_libraries(TsimafeiPlugin PRIVATE
