@@ -1193,7 +1193,7 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 					}
 					else
 					{
-						newDtMs = (double)(tc_self_ms_local - tc_ref_ms_local);
+						newDtMs = (double)(tc_ref_ms_local - tc_self_ms_local);
 					}
 
 					// Hysteresis: if newDtMs differs from d_ms by more than
