@@ -42,15 +42,15 @@ cmake ..
 make
 ```
 
-Wynik: `build/TsimafeiPlugin_artefacts/Release/VST3/`
+Wynik: `build/AudioSyncPlugin_artefacts/Release/VST3/`
 
 ### Kompilacja (Windows)
 
-Otwórz `Tsimafei 187719.jucer` w **Projucer**, wyeksportuj do Visual Studio 2022, a następnie
+Otwórz `AudioSync.jucer` w **Projucer**, wyeksportuj do Visual Studio 2022, a następnie
 skompiluj z IDE lub:
 
 ```bash
-msbuild "Builds/VisualStudio2022/Tsimafei 187719.sln"
+msbuild "Builds/VisualStudio2022/AudioSync.sln"
 ```
 
 ## Użycie
@@ -67,7 +67,7 @@ msbuild "Builds/VisualStudio2022/Tsimafei 187719.sln"
 
 ## Autorzy i podziękowania
 
-- Tsimafei Dalhou
+- Filip Lewinski
 - dr inż. Bartłomiej Mróz
 - dr inż. Piotr Odya
 

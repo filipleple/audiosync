@@ -1,4 +1,4 @@
-# Technical Documentation — "Tsimafei 187719" JUCE VST Plugin
+# Technical Documentation — "AudioSync" JUCE VST Plugin
 
 **Version:** 1.4 (UI label), plugin version string 1.0.0
 **Format:** VST3, AU, Standalone
@@ -66,15 +66,15 @@ The plugin is intended to be loaded in a DAW (the README cites REAPER) on a ster
 
 ```
 Source/
-  PluginProcessor.h     — tc_data class definition; NewProjectAudioProcessor declaration
+  PluginProcessor.h     — tc_data class definition; AutoSyncAudioProcessor declaration
   PluginProcessor.cpp   — All DSP logic: LTC decoder, delay engine, processBlock
-  PluginEditor.h        — NewProjectAudioProcessorEditor declaration
+  PluginEditor.h        — AutoSyncAudioProcessorEditor declaration
   PluginEditor.cpp      — GUI layout, timer callback, user controls
 JuceLibraryCode/
   JucePluginDefines.h   — Auto-generated plugin metadata macros
   JuceHeader.h          — Aggregated JUCE module header
   include_juce_*.cpp/mm — JUCE module compilation units
-Tsimafei 187719.jucer   — Projucer project file
+AudioSync.jucer   — Projucer project file
 ```
 
 The entire processing logic lives in **`PluginProcessor.cpp`**. There are four free (non-member) inline functions at file scope:
@@ -529,7 +529,7 @@ In `processTimeCode()`, `new_time != old_time` triggers a string format update a
 ## 6. `processTimeCode()` — Per-Sample Wrapper
 
 ```cpp
-inline void NewProjectAudioProcessor::processTimeCode(
+inline void AutoSyncAudioProcessor::processTimeCode(
     const float& sample, tc_data& channel, std::string& msg,
     const int& index, const float& srate, const int& slider)
 ```
@@ -547,7 +547,7 @@ msg = std::to_string(channel.hrs / 10) + std::to_string(channel.hrs % 10) + ":"
     + std::to_string(channel.frms / 10) + std::to_string(channel.frms % 10);
 ```
 
-Each digit is extracted by integer division and modulo to produce exactly two characters per field, zero-padded (e.g., `hrs=5` → `"05"`). The result is written to one of the public `std::string` members of `NewProjectAudioProcessor` (`tc`, `output_c2`, `input_ch1`, `input_ch2`), which the GUI timer reads on the message thread.
+Each digit is extracted by integer division and modulo to produce exactly two characters per field, zero-padded (e.g., `hrs=5` → `"05"`). The result is written to one of the public `std::string` members of `AutoSyncAudioProcessor` (`tc`, `output_c2`, `input_ch1`, `input_ch2`), which the GUI timer reads on the message thread.
 
 The `srate` parameter defaults to `44100` (hardcoded). The plugin does not query `getSampleRate()` dynamically; see [Section 13](#13-known-limitations-and-design-notes).
 
@@ -715,7 +715,7 @@ The new sample is appended to the back of the deque and the oldest sample is tak
 > for the core `handleTimecode` → `calc_delay` → `delay()` pipeline, which is still present.
 
 ```cpp
-void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
+void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer,
                                              juce::MidiBuffer& midiMessages)
 ```
 
@@ -870,7 +870,7 @@ When delay is inactive:
 > `ui_redesign.md` for the new layout specification. The absolute-pixel layout described
 > below no longer exists in `PluginEditor.cpp`.
 
-`NewProjectAudioProcessorEditor` extends `juce::AudioProcessorEditor` and `juce::Timer`. The editor window is fixed at **400 × 300 pixels**.
+`AutoSyncAudioProcessorEditor` extends `juce::AudioProcessorEditor` and `juce::Timer`. The editor window is fixed at **400 × 300 pixels**.
 
 ### 10.1 Layout and Controls
 
@@ -906,7 +906,7 @@ startTimer(1);  // 1 ms interval → ~1000 callbacks/second
 The editor starts a 1 ms JUCE timer in its constructor. `timerCallback()` is called on the **message thread** at this rate to poll `audioProcessor`'s public state variables and update label text:
 
 ```cpp
-void NewProjectAudioProcessorEditor::timerCallback()
+void AutoSyncAudioProcessorEditor::timerCallback()
 {
     timecode_box.setText(audioProcessor.tc, juce::dontSendNotification);
     timecode_box_chanel2.setText(audioProcessor.output_c2, juce::dontSendNotification);
@@ -1018,7 +1018,7 @@ Key build-time settings:
 | `JucePlugin_ProducesMidiOutput` | 1 | Emit MIDI output |
 | `JucePlugin_IsMidiEffect` | 0 | Not a MIDI-only effect (has audio I/O) |
 | `JucePlugin_IsSynth` | 0 | Not a synthesizer |
-| `JucePlugin_Name` | "Tsimafei 187719" | Plugin display name |
+| `JucePlugin_Name` | "AudioSync" | Plugin display name |
 | `JucePlugin_Vst3Category` | "Fx" | VST3 category |
 | `JucePlugin_VSTNumMidiInputs` | 16 | Supports up to 16 MIDI input channels |
 | `JucePlugin_VSTNumMidiOutputs` | 16 | Supports up to 16 MIDI output channels |

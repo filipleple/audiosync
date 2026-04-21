@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(TsimafeiPlugin VERSION 1.0.0)
+project(AudioSyncPlugin VERSION 1.0.0)
 
 # JUCE is expected at ../../JUCE relative to this file (matching the .jucer paths).
 # Override by passing -DJUCE_PATH=/path/to/JUCE to cmake.
@@ -8,9 +8,9 @@ if(NOT DEFINED JUCE_PATH)
 endif()
 add_subdirectory(${JUCE_PATH} JUCE_build)
 
-juce_add_plugin(TsimafeiPlugin
-    PRODUCT_NAME        "Tsimafei 187719"
-    COMPANY_NAME        "yourcompany"
+juce_add_plugin(AudioSyncPlugin
+    PRODUCT_NAME        "AudioSync"
+    COMPANY_NAME        "FilipLewinski"
     PLUGIN_MANUFACTURER_CODE Manu
     PLUGIN_CODE         Pqui
     FORMATS             VST3
@@ -22,18 +22,18 @@ juce_add_plugin(TsimafeiPlugin
     VST3_CATEGORIES     "Fx"
 )
 
-target_sources(TsimafeiPlugin PRIVATE
+target_sources(AudioSyncPlugin PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
 )
 
 # PluginProcessor.h uses #include <JuceHeader.h> from the Projucer-generated
 # JuceLibraryCode directory. Make it findable under the CMake build as well.
-target_include_directories(TsimafeiPlugin PRIVATE
+target_include_directories(AudioSyncPlugin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/JuceLibraryCode
 )
 
-target_compile_definitions(TsimafeiPlugin PUBLIC
+target_compile_definitions(AudioSyncPlugin PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
@@ -43,7 +43,7 @@ target_compile_definitions(TsimafeiPlugin PUBLIC
     NOMINMAX
 )
 
-target_link_libraries(TsimafeiPlugin PRIVATE
+target_link_libraries(AudioSyncPlugin PRIVATE
     juce::juce_audio_basics
     juce::juce_audio_devices
     juce::juce_audio_formats
@@ -63,5 +63,5 @@ target_link_libraries(TsimafeiPlugin PRIVATE
 
 # shm_open / shm_unlink live in librt on Linux (not needed on macOS or Windows).
 if (UNIX AND NOT APPLE)
-    target_link_libraries(TsimafeiPlugin PRIVATE rt)
+    target_link_libraries(AudioSyncPlugin PRIVATE rt)
 endif()

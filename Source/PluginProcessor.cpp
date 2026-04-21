@@ -283,7 +283,7 @@ inline void handle_const_delay(const float& sample, tc_data& data)
 }
 
 
-NewProjectAudioProcessor::NewProjectAudioProcessor()
+AutoSyncAudioProcessor::AutoSyncAudioProcessor()
 #ifndef JucePlugin_PreferredChannelConfigurations
 	: AudioProcessor(BusesProperties()
 #if ! JucePlugin_IsMidiEffect
@@ -304,19 +304,19 @@ NewProjectAudioProcessor::NewProjectAudioProcessor()
 	juce::Logger::writeToLog("Processor constructed");
 }
 
-NewProjectAudioProcessor::~NewProjectAudioProcessor()
+AutoSyncAudioProcessor::~AutoSyncAudioProcessor()
 {
 	juce::Logger::writeToLog("Processor destroyed");
 	juce::Logger::setCurrentLogger(nullptr);
 }
 
 //==============================================================================
-const juce::String NewProjectAudioProcessor::getName() const
+const juce::String AutoSyncAudioProcessor::getName() const
 {
 	return JucePlugin_Name;
 }
 
-bool NewProjectAudioProcessor::acceptsMidi() const
+bool AutoSyncAudioProcessor::acceptsMidi() const
 {
 #if JucePlugin_WantsMidiInput
 	return true;
@@ -325,7 +325,7 @@ bool NewProjectAudioProcessor::acceptsMidi() const
 #endif
 }
 
-bool NewProjectAudioProcessor::producesMidi() const
+bool AutoSyncAudioProcessor::producesMidi() const
 {
 #if JucePlugin_ProducesMidiOutput
 	return true;
@@ -334,7 +334,7 @@ bool NewProjectAudioProcessor::producesMidi() const
 #endif
 }
 
-bool NewProjectAudioProcessor::isMidiEffect() const
+bool AutoSyncAudioProcessor::isMidiEffect() const
 {
 #if JucePlugin_IsMidiEffect
 	return true;
@@ -343,36 +343,36 @@ bool NewProjectAudioProcessor::isMidiEffect() const
 #endif
 }
 
-double NewProjectAudioProcessor::getTailLengthSeconds() const
+double AutoSyncAudioProcessor::getTailLengthSeconds() const
 {
 	return 0.0;
 }
 
-int NewProjectAudioProcessor::getNumPrograms()
+int AutoSyncAudioProcessor::getNumPrograms()
 {
 	return 1;
 }
 
-int NewProjectAudioProcessor::getCurrentProgram()
+int AutoSyncAudioProcessor::getCurrentProgram()
 {
 	return 0;
 }
 
-void NewProjectAudioProcessor::setCurrentProgram(int index)
+void AutoSyncAudioProcessor::setCurrentProgram(int index)
 {
 }
 
-const juce::String NewProjectAudioProcessor::getProgramName(int index)
+const juce::String AutoSyncAudioProcessor::getProgramName(int index)
 {
 	return {};
 }
 
-void NewProjectAudioProcessor::changeProgramName(int index, const juce::String& newName)
+void AutoSyncAudioProcessor::changeProgramName(int index, const juce::String& newName)
 {
 }
 
 //==============================================================================
-void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
+void AutoSyncAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
 	currentSampleRate = sampleRate;
 	totalSamplesProcessed = 0;
@@ -390,13 +390,13 @@ void NewProjectAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBl
 		    + "  slot=" + juce::String(slotId));
 }
 
-void NewProjectAudioProcessor::releaseResources()
+void AutoSyncAudioProcessor::releaseResources()
 {
 	shm.close();
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
-bool NewProjectAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
+bool AutoSyncAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const
 {
 #if JucePlugin_IsMidiEffect
 	juce::ignoreUnused(layouts);
@@ -416,7 +416,7 @@ bool NewProjectAudioProcessor::isBusesLayoutSupported(const BusesLayout& layouts
 }
 
 
-inline void NewProjectAudioProcessor::processTimeCode(const float& sample, tc_data& channel, std::string& msg,
+inline void AutoSyncAudioProcessor::processTimeCode(const float& sample, tc_data& channel, std::string& msg,
                                                       const int& index, const float& srate,
                                                       const int& slider, int64_t abs_pos)
 {
@@ -445,7 +445,7 @@ inline void NewProjectAudioProcessor::processTimeCode(const float& sample, tc_da
 }
 #endif
 
-void NewProjectAudioProcessor::pushAudioAnalysisSample(float ch1, float ch2)
+void AutoSyncAudioProcessor::pushAudioAnalysisSample(float ch1, float ch2)
 {
 	if (audFallback.novelty1.empty())
 		return;
@@ -509,7 +509,7 @@ void NewProjectAudioProcessor::pushAudioAnalysisSample(float ch1, float ch2)
 	}
 }
 
-void NewProjectAudioProcessor::estimateAudioFallbackOffset()
+void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 {
 	if (audFallback.framesFilled < audFallback.windowFrames)
 		return;
@@ -786,7 +786,7 @@ void NewProjectAudioProcessor::estimateAudioFallbackOffset()
 	                       && audFallback.confAud > confThresh);
 }
 
-void NewProjectAudioProcessor::fuseLtcAndAudioFallback()
+void AutoSyncAudioProcessor::fuseLtcAndAudioFallback()
 {
 	// In slave mode only chnl1_in is decoded; chnl2_in is never updated and
 	// would permanently report FAIL, so we use masterValid + chnl1_in state
@@ -885,7 +885,7 @@ void NewProjectAudioProcessor::fuseLtcAndAudioFallback()
 	prevFusionSource = fusion.source;
 }
 
-void NewProjectAudioProcessor::writeMasterSlot()
+void AutoSyncAudioProcessor::writeMasterSlot()
 {
 	MasterSlot& m = shm.get()->master;
 
@@ -918,7 +918,7 @@ void NewProjectAudioProcessor::writeMasterSlot()
 	++shmWriteCount;
 }
 
-void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
 	juce::ScopedNoDenormals noDenormals;
 
@@ -1249,18 +1249,18 @@ void NewProjectAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
 }
 
 //==============================================================================
-bool NewProjectAudioProcessor::hasEditor() const
+bool AutoSyncAudioProcessor::hasEditor() const
 {
 	return true;
 }
 
-juce::AudioProcessorEditor* NewProjectAudioProcessor::createEditor()
+juce::AudioProcessorEditor* AutoSyncAudioProcessor::createEditor()
 {
-	return new NewProjectAudioProcessorEditor(*this);
+	return new AutoSyncAudioProcessorEditor(*this);
 }
 
 //==============================================================================
-void NewProjectAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
+void AutoSyncAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 {
 	juce::XmlElement xml("AutosyncState");
 	xml.setAttribute("mode",         (int)pluginMode);
@@ -1274,7 +1274,7 @@ void NewProjectAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
 	copyXmlToBinary(xml, destData);
 }
 
-void NewProjectAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
+void AutoSyncAudioProcessor::setStateInformation(const void* data, int sizeInBytes)
 {
 	auto xml = getXmlFromBinary(data, sizeInBytes);
 	if (xml == nullptr || !xml->hasTagName("AutosyncState"))
@@ -1294,5 +1294,5 @@ void NewProjectAudioProcessor::setStateInformation(const void* data, int sizeInB
 //==============================================================================
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-	return new NewProjectAudioProcessor();
+	return new AutoSyncAudioProcessor();
 }

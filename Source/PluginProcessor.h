@@ -442,7 +442,7 @@ struct AlphaBetaState
 
 enum class PluginMode { Master = 0, Slave = 1 };
 
-class NewProjectAudioProcessor : public juce::AudioProcessor
+class AutoSyncAudioProcessor : public juce::AudioProcessor
 #if JucePlugin_Enable_ARA
                              , public juce::AudioProcessorARAExtension
 #endif
@@ -520,8 +520,8 @@ public:
 
 public:
 	//==============================================================================
-	NewProjectAudioProcessor();
-	~NewProjectAudioProcessor() override;
+	AutoSyncAudioProcessor();
+	~AutoSyncAudioProcessor() override;
 
 	//==============================================================================
 	void prepareToPlay(double sampleRate, int samplesPerBlock) override;
@@ -608,6 +608,6 @@ private:
 	int64_t totalSamplesProcessed = 0;
 
 	//==============================================================================
-	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NewProjectAudioProcessor)
+	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AutoSyncAudioProcessor)
 	std::unique_ptr<juce::FileLogger> fileLogger;
 };

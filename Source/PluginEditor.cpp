@@ -616,10 +616,10 @@ void ConfigSection::resized()
 }
 
 // ============================================================
-// NewProjectAudioProcessorEditor
+// AutoSyncAudioProcessorEditor
 // ============================================================
 
-NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioProcessor& p)
+AutoSyncAudioProcessorEditor::AutoSyncAudioProcessorEditor(AutoSyncAudioProcessor& p)
     : AudioProcessorEditor(&p), audioProcessor(p)
 {
     addAndMakeVisible(header);
@@ -692,13 +692,13 @@ NewProjectAudioProcessorEditor::NewProjectAudioProcessorEditor(NewProjectAudioPr
     startTimer(1);
 }
 
-NewProjectAudioProcessorEditor::~NewProjectAudioProcessorEditor() {}
+AutoSyncAudioProcessorEditor::~AutoSyncAudioProcessorEditor() {}
 
 // ============================================================
 // paint  — window background
 // ============================================================
 
-void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
+void AutoSyncAudioProcessorEditor::paint(juce::Graphics& g)
 {
     g.fillAll(Theme::bg);
 }
@@ -707,7 +707,7 @@ void NewProjectAudioProcessorEditor::paint(juce::Graphics& g)
 // resized  — top-level Rectangle slicing
 // ============================================================
 
-void NewProjectAudioProcessorEditor::resized()
+void AutoSyncAudioProcessorEditor::resized()
 {
     auto area = getLocalBounds().reduced(PAD);
     const int totalH = getHeight();
@@ -735,7 +735,7 @@ void NewProjectAudioProcessorEditor::resized()
 // timerCallback  — push processor state to all sub-components
 // ============================================================
 
-void NewProjectAudioProcessorEditor::timerCallback()
+void AutoSyncAudioProcessorEditor::timerCallback()
 {
     // --- HeaderBar ---
     header.setMode(audioProcessor.pluginMode == PluginMode::Master ? "MASTER" : "SLAVE");

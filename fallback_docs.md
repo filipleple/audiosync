@@ -743,7 +743,7 @@ in the GUI.
 
 ### 8.1 AudioFallbackState
 
-Declared in `PluginProcessor.h` as a plain struct before `NewProjectAudioProcessor`.
+Declared in `PluginProcessor.h` as a plain struct before `AutoSyncAudioProcessor`.
 
 **Parameters (set by `init(double sampleRate)`, not const):**
 

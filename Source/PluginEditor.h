@@ -208,19 +208,19 @@ private:
 // ============================================================
 // Main editor
 // ============================================================
-class NewProjectAudioProcessorEditor : public juce::AudioProcessorEditor,
+class AutoSyncAudioProcessorEditor : public juce::AudioProcessorEditor,
                                        public juce::Timer
 {
 public:
-    explicit NewProjectAudioProcessorEditor(NewProjectAudioProcessor&);
-    ~NewProjectAudioProcessorEditor() override;
+    explicit AutoSyncAudioProcessorEditor(AutoSyncAudioProcessor&);
+    ~AutoSyncAudioProcessorEditor() override;
 
     void paint(juce::Graphics&) override;
     void resized() override;
     void timerCallback() override;
 
 private:
-    NewProjectAudioProcessor& audioProcessor;
+    AutoSyncAudioProcessor& audioProcessor;
 
     HeaderBar       header;
     SignalCard      signalCard;
@@ -228,5 +228,5 @@ private:
     DiagnosticsCard diagCard;
     ConfigSection   configSection;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NewProjectAudioProcessorEditor)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AutoSyncAudioProcessorEditor)
 };
