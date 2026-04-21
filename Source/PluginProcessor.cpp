@@ -233,31 +233,134 @@ inline void handleTimecode(const long double& sample, tc_data& data, const int& 
 					// Reject such frames outright; force re-lock so the decoder
 					// does not propagate garbage into the delay engine.
 					const int nomFps = (int)std::round(frates[slider]);
-					if (data.hrs > 23 || data.mnts > 59 || data.scnds > 59 || data.frms >= nomFps)
+					const int parsed_hrs   = data.hrs;
+					const int parsed_mnts  = data.mnts;
+					const int parsed_scnds = data.scnds;
+					const int parsed_frms  = data.frms;
+					const double frameMsBcd = 1000.0 / (double)nomFps;
+					auto rollbackDigits = [&]() {
+						if (data.last_accepted_tc_ms >= 0)
+						{
+							const int64_t t = data.last_accepted_tc_ms;
+							data.hrs   = (int)((t / 3600000LL) % 24);
+							data.mnts  = (int)((t /   60000LL) % 60);
+							data.scnds = (int)((t /    1000LL) % 60);
+							data.frms  = (int)std::round(((double)(t % 1000LL)) / frameMsBcd);
+						}
+						else
+						{
+							data.hrs = data.mnts = data.scnds = data.frms = 0;
+						}
+					};
+					if (parsed_hrs > 23 || parsed_mnts > 59 || parsed_scnds > 59 || parsed_frms >= nomFps)
 					{
 						++data.rejected_frames_count;
 						data.syncpos = -1;
+						// Restore last accepted values so a BCD-invalid frame
+						// cannot leak its parsed digits into chnl1_in.hrs/...,
+						// which processBlock reads when computing d_ms.
+						rollbackDigits();
 					}
 					else
 					{
-					data.syncpos = 0;
-					data.syncstate = 2;
-					data.last_decode_sample = abs_pos;
-					data.new_time = ((data.hrs * 60 + data.mnts) * 60 + data.scnds) * 100 + data.frms;
+						// Temporal-coherence gate.  Compute the candidate
+						// timecode in milliseconds and require it to step
+						// forward by 1–3 frames from the last accepted frame
+						// when the decoder is locked.  Out-of-range deltas
+						// indicate a speech-derived BCD-valid collision and
+						// must not mutate any persistent decoder state.
+						const int64_t candidate_ms =
+							  (int64_t)parsed_hrs   * 3600000LL
+							+ (int64_t)parsed_mnts  *   60000LL
+							+ (int64_t)parsed_scnds *    1000LL
+							+ (int64_t)((double)parsed_frms * frameMsBcd);
 
-					// Quality: lock and sync-word hit counting
-					++data.w_sync_hits;
-					++data.w_frames_decoded;
+						bool accept_frame;
+						if (data.locked && data.last_accepted_tc_ms >= 0)
+						{
+							const int64_t delta_ms = candidate_ms - data.last_accepted_tc_ms;
+							const double minDelta  = -1.5 * frameMsBcd;   // 1 frame backward tolerance (jitter)
+							const double maxDelta  =  3.5 * frameMsBcd;   // up to 3 dropped frames
+							accept_frame = (double)delta_ms >= minDelta
+							            && (double)delta_ms <= maxDelta;
+						}
+						else
+						{
+							accept_frame = true;
+						}
 
-					// Continuity check: frame should follow prev by +1, or wrap at second boundary
-					if (data.w_prev_frms >= 0)
-					{
-						bool step = (data.frms == data.w_prev_frms + 1);
-						bool wrap = (data.frms == 0 && data.w_prev_frms >= 23);
-						if (step || wrap)
-							++data.w_continuity_ok;
-					}
-					data.w_prev_frms = data.frms;
+						if (!accept_frame)
+						{
+							++data.rejected_frames_count;
+							++data.consec_reject_since_lock;
+							if (data.consec_reject_since_lock >= tc_data::UNLOCK_M)
+							{
+								data.locked                   = false;
+								data.consec_good_frames       = 0;
+								data.consec_reject_since_lock = 0;
+								data.last_accepted_tc_ms      = -1;
+							}
+							// Roll parsed digits back to the last accepted
+							// frame's values so garbage does not reach the
+							// slave d_ms commit path via data.hrs/mnts/scnds/frms.
+							rollbackDigits();
+							data.syncpos = -1;
+						}
+						else
+						{
+							data.syncpos = 0;
+							data.syncstate = 2;
+							data.last_decode_sample = abs_pos;
+							data.new_time = ((data.hrs * 60 + data.mnts) * 60 + data.scnds) * 100 + data.frms;
+
+							// Coherence state update: count a legitimate step
+							// (inside the normal +1..+3 band) toward re-lock.
+							if (!data.locked)
+							{
+								if (data.last_accepted_tc_ms >= 0)
+								{
+									const int64_t delta_ms = candidate_ms - data.last_accepted_tc_ms;
+									const bool stepForward =
+									      (double)delta_ms >=  0.5 * frameMsBcd
+									   && (double)delta_ms <=  3.5 * frameMsBcd;
+									if (stepForward)
+									{
+										if (++data.consec_good_frames >= tc_data::LOCK_N)
+										{
+											data.locked                   = true;
+											data.consec_reject_since_lock = 0;
+										}
+									}
+									else
+									{
+										data.consec_good_frames = 1;
+									}
+								}
+								else
+								{
+									data.consec_good_frames = 1;
+								}
+							}
+							else
+							{
+								data.consec_reject_since_lock = 0;
+							}
+							data.last_accepted_tc_ms = candidate_ms;
+
+							// Quality: lock and sync-word hit counting
+							++data.w_sync_hits;
+							++data.w_frames_decoded;
+
+							// Continuity check: frame should follow prev by +1, or wrap at second boundary
+							if (data.w_prev_frms >= 0)
+							{
+								bool step = (data.frms == data.w_prev_frms + 1);
+								bool wrap = (data.frms == 0 && data.w_prev_frms >= 23);
+								if (step || wrap)
+									++data.w_continuity_ok;
+							}
+							data.w_prev_frms = data.frms;
+						}
 					} // end BCD-valid else
 				}
 				else
@@ -488,6 +591,13 @@ void AutoSyncAudioProcessor::pushAudioAnalysisSample(float ch1, float ch2)
 
 	float nov1 = std::max(0.0f, e1 - audFallback.prevEnergy1);
 	float nov2 = std::max(0.0f, e2 - audFallback.prevEnergy2);
+
+	// Stereo-LTC guard: when LTC is actively decoding on ch1, ch2 is likely also
+	// carrying LTC in a stereo routing (both channels identical).  Scale nov2 to
+	// zero as LTC quality rises so carrier energy doesn't poison the scene-audio
+	// novelty buffer.  The gate opens automatically as LTC fades, letting speech
+	// onsets accumulate cleanly before the NCC fallback activates.
+	nov2 *= (1.0f - std::min(1.0f, chnl1_in.Q_LTC / 0.5f));
 
 	audFallback.prevEnergy1      = e1;
 	audFallback.prevEnergy2      = e2;
@@ -799,14 +909,26 @@ void AutoSyncAudioProcessor::fuseLtcAndAudioFallback()
 		     && (chnl1_in.ltc_state == tc_data::LTCState::VALID)
 		     && !drift_suspected;
 
+	// Detect LTC→FAIL transition and arm the hold timer.  Only fires once per
+	// fade event (edge-detect on prevChnl1InLtcState).
+	if (chnl1_in.ltc_state == tc_data::LTCState::FAIL
+	    && prevChnl1InLtcState != tc_data::LTCState::FAIL)
+	{
+		ltcFadeTimestampMs = juce::Time::currentTimeMillis();
+	}
+	prevChnl1InLtcState = chnl1_in.ltc_state;
+
 	if (ltcOk)
 	{
-		// Keep the anchor up to date while LTC is healthy so it is ready
-		// the moment LTC degrades.
-		audFallback.anchorMs   = d_ms;
-		audFallback.anchorHops = (int)std::round(d_ms / audFallback.hopMs);
-		audFallback.hasAnchor  = true;
-		anchorTimestampMs      = juce::Time::currentTimeMillis();
+		// Only refresh the anchor when d_ms is stable — no recent jump candidate.
+		// A value that slipped through the confirm count must not become the NCC seed.
+		if (!d_ms_recently_jumped)
+		{
+			audFallback.anchorMs   = d_ms;
+			audFallback.anchorHops = (int)std::round(d_ms / audFallback.hopMs);
+			audFallback.hasAnchor  = true;
+			anchorTimestampMs      = juce::Time::currentTimeMillis();
+		}
 
 		fusion.source         = FusionState::Source::LTC;
 		fusion.selectedMs     = d_ms;
@@ -815,11 +937,18 @@ void AutoSyncAudioProcessor::fuseLtcAndAudioFallback()
 	}
 	else
 	{
+		// Transition hold: suppress audio fallback for 2.5 s after LTC drops.
+		// This gives the LTC carrier time to clear from the novelty buffer (important
+		// for stereo-LTC routing where ch2 also carries LTC) and prevents the NCC
+		// from running on a contaminated buffer during the fade-out window.
+		const bool inTransitionHold = (ltcFadeTimestampMs != 0)
+		    && (juce::Time::currentTimeMillis() - ltcFadeTimestampMs < 2500LL);
+
 		// Use a tighter confidence threshold when the estimator ran in anchored
 		// mode: the narrow search window produces fewer false peaks.
 		const double confThresh = audFallback.lastEstimateAnchored ? 0.25 : 0.4;
 
-		if (audFallback.valid && audFallback.confAud > confThresh)
+		if (!inTransitionHold && audFallback.valid && audFallback.confAud > confThresh)
 		{
 			fusion.source         = FusionState::Source::AudioFallback;
 			fusion.selectedMs     = audFallback.deltaAudMs;
@@ -904,6 +1033,7 @@ void AutoSyncAudioProcessor::writeMasterSlot()
 	m.nov_anchor_sample   = totalSamplesProcessed;  // abs sample pos at this write
 	m.Q_ref               = chnl1_in.Q_LTC;
 	m.ltc_state           = (uint8_t)chnl1_in.ltc_state;
+	m.locked              = chnl1_in.locked ? 1u : 0u;
 	m.valid               = (audFallback.framesFilled >= N);
 	m.nov_writePos        = audFallback.writePos;
 	m.nov_framesFilled    = audFallback.framesFilled;
@@ -1124,6 +1254,7 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 				int64_t ref_decode_sample_local  = 0;
 				int64_t nov_anchor_sample_local  = 0;
 				uint8_t master_ltc_state         = 0;
+				uint8_t master_locked_local      = 0;
 				bool    master_valid_local       = false;
 				int     nov_writePos_local       = 0;
 				int     nov_framesFilled_local   = 0;
@@ -1136,6 +1267,7 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 					ref_decode_sample_local  = m.ref_decode_sample;
 					nov_anchor_sample_local  = m.nov_anchor_sample;
 					master_ltc_state         = m.ltc_state;
+					master_locked_local      = m.locked;
 					master_valid_local       = m.valid;
 					nov_writePos_local       = m.nov_writePos;
 					nov_framesFilled_local   = m.nov_framesFilled;
@@ -1171,7 +1303,14 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 					+ (int64_t)chnl1_in.scnds *    1000LL
 					+ (int64_t)chnl1_in.frms  *    1000LL / std::max(1, fps);
 
-				if (master_valid_local && master_ltc_state >= 1 && tc_ref_ms_local != 0)
+				// Lock gate: both sides must have the temporal-coherence gate
+				// engaged before we'll update d_ms from LTC.  When either decoder
+				// is unlocked (re-acquiring after a sustained reject burst, or
+				// having latched briefly onto speech-derived BCD-valid garbage
+				// during an LTC fade), the tc_ref_ms / tc_self_ms pair can't be
+				// trusted — hold the last committed d_ms instead.
+				const bool bothLocked = (master_locked_local != 0) && chnl1_in.locked;
+				if (master_valid_local && master_ltc_state >= 1 && bothLocked && tc_ref_ms_local != 0)
 				{
 					// Sample-accurate delay: measures how many samples apart the two
 					// decoders' last frame-detect events were on the shared timeline,
@@ -1196,16 +1335,22 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 						newDtMs = (double)(tc_ref_ms_local - tc_self_ms_local);
 					}
 
-					// Hysteresis: if newDtMs differs from d_ms by more than
-					// D_MS_JUMP_THRESH_MS, hold it in d_ms_pending and require
-					// D_MS_JUMP_CONFIRMS consecutive consistent readings before
-					// committing.  A single garbage frame (e.g. from an abrupt LTC
-					// cut) is rejected; a real large-offset track shift is accepted
-					// after ~3 updates (~0.3 s).
+					// Hysteresis: if newDtMs differs from d_ms by more than the effective
+					// threshold, hold it in d_ms_pending and require D_MS_JUMP_CONFIRMS
+					// consecutive consistent readings before committing.
+					//
+					// Quality gate: when the LTC signal is degrading (Q < 0.65), tighten
+					// the threshold to 50 ms so that corrupted-but-plausible frames during
+					// a fade cannot accumulate 3 confirmations and commit a garbage d_ms.
+					const double effectiveJumpThresh = (chnl1_in.Q_LTC < 0.65f)
+					    ? 50.0 : D_MS_JUMP_THRESH_MS;
+
 					bool commitDtMs = true;
-					if (d_ms != 0.0 && std::abs(newDtMs - d_ms) > D_MS_JUMP_THRESH_MS)
+					if (d_ms != 0.0 && std::abs(newDtMs - d_ms) > effectiveJumpThresh)
 					{
-						if (std::abs(newDtMs - d_ms_pending) < D_MS_JUMP_THRESH_MS / 2.0)
+						d_ms_clean_count     = 0;
+						d_ms_recently_jumped = true;
+						if (std::abs(newDtMs - d_ms_pending) < effectiveJumpThresh / 2.0)
 							++d_ms_pending_count;
 						else
 						{
@@ -1217,6 +1362,8 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 					else
 					{
 						d_ms_pending_count = 0;
+						if (++d_ms_clean_count >= 5)
+							d_ms_recently_jumped = false;
 					}
 
 					lastMasterWriteMs = juce::Time::currentTimeMillis();

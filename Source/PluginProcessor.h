@@ -99,6 +99,22 @@ public:
 	enum class LTCState : uint8_t { FAIL = 0, SUSPECT = 1, VALID = 2 };
 	LTCState ltc_state = LTCState::FAIL;
 
+	// === Temporal-coherence gate ===
+	// Once the decoder has seen LOCK_N consecutive frames that step forward by
+	// the expected 1–3 frames, it enters a "locked" state.  While locked, any
+	// new BCD-valid frame whose timecode is outside [-1, +3] frames relative
+	// to the last accepted one is rejected without mutating hrs/mnts/scnds/
+	// frms/last_decode_sample.  This catches speech transients that happen to
+	// satisfy the sync-word + BCD range checks but decode to incoherent times.
+	// After UNLOCK_M consecutive rejects the gate drops the lock so a genuine
+	// re-acquisition after a real gap can still take hold.
+	static constexpr int  LOCK_N    = 10;   // ~0.33 s of clean LTC at 30 fps
+	static constexpr int  UNLOCK_M  = 20;   // ~0.67 s of sustained rejects
+	bool    locked                     = false;
+	int     consec_good_frames         = 0;
+	int     consec_reject_since_lock   = 0;
+	int64_t last_accepted_tc_ms        = -1;   // −1 = no previous accepted frame
+
 	// Persistent counters (not reset by clear())
 	int decoder_reset_count = 0;
 	int rejected_frames_count = 0;
@@ -220,6 +236,15 @@ public:
 		w_sync_hits = 0;
 		Q_LTC = 0.0f;
 		ltc_state = LTCState::FAIL;
+
+		// Coherence gate: force re-lock from scratch after any decoder reset
+		// so the first frame after recovery is accepted without being checked
+		// against the pre-reset timecode.
+		locked                   = false;
+		consec_good_frames       = 0;
+		consec_reject_since_lock = 0;
+		last_accepted_tc_ms      = -1;
+
 		++decoder_reset_count;
 	}
 };
@@ -597,10 +622,24 @@ private:
 	// Large jumps in the computed delay require JUMP_CONFIRMS_NEEDED consecutive
 	// consistent readings before being applied, so a single garbage LTC frame
 	// (e.g. from an abrupt cut) cannot immediately derail the delay engine.
-	double  d_ms_pending       = 0.0;
-	int     d_ms_pending_count = 0;
-	static constexpr double   D_MS_JUMP_THRESH_MS    = 500.0;  // jump magnitude that triggers doubt
-	static constexpr int      D_MS_JUMP_CONFIRMS     = 3;      // consecutive readings needed to accept
+	double  d_ms_pending         = 0.0;
+	int     d_ms_pending_count   = 0;
+	static constexpr double D_MS_JUMP_THRESH_MS = 500.0;  // jump magnitude that triggers doubt
+	static constexpr int    D_MS_JUMP_CONFIRMS  = 3;      // consecutive readings needed to accept
+
+	// Set when any jump candidate is detected; cleared after 5 consecutive clean
+	// reads.  While true, the NCC anchor is not refreshed from d_ms so that a
+	// corrupted value that slipped through the confirm count cannot become the
+	// alpha-beta seed at the LTC→fallback transition.
+	bool d_ms_recently_jumped = false;
+	int  d_ms_clean_count     = 0;
+
+	// Timestamp (juce::Time::currentTimeMillis) at which chnl1_in last transitioned
+	// to FAIL.  Used by fuseLtcAndAudioFallback() to enforce a hold period before
+	// activating audio fallback, giving the LTC carrier time to clear from the
+	// novelty buffer.
+	int64_t ltcFadeTimestampMs      = 0;
+	tc_data::LTCState prevChnl1InLtcState = tc_data::LTCState::FAIL;
 
 	// Monotonically increasing sample counter, reset on prepareToPlay.
 	// Used as the absolute sample position passed to handleTimecode so that

@@ -71,7 +71,8 @@ struct MasterSlot
 
     bool    valid           = false;  // false until master has produced >= 1 window
     uint8_t ltc_state       = 0;      // 0=FAIL, 1=SUSPECT, 2=VALID
-    uint8_t _pad0[2]        = {};     // keep int64_t below 8-byte aligned
+    uint8_t locked          = 0;      // tc_data temporal-coherence gate: 0=unlocked, 1=locked
+    uint8_t _pad0[1]        = {};     // keep int64_t below 8-byte aligned
 
     int64_t tc_ref_ms          = 0;      // reference timecode in milliseconds
     int64_t ref_decode_sample  = 0;      // abs stream sample pos of last master LTC decode
