@@ -262,18 +262,31 @@ struct AudioFallbackState
 	int    refreshEvery = 20;
 	double hopMs        = 10.0;
 
-	// 1-pole HPF (applied per-sample before energy accumulation).
-	// Strips DC and sub-100 Hz content so energy novelty responds to
-	// transients/speech rather than low-frequency rumble or carrier drift.
+	// Cascaded 1-pole bandpass (applied per-sample before energy accumulation).
+	// HPF @ 100 Hz strips DC and carrier rumble so novelty responds to
+	// transients/speech rather than low-frequency drift.
+	// LPF @ 3500 Hz removes wind, HVAC, and codec artefacts that would
+	// otherwise add uncorrelated HF energy to the novelty envelope.
 	float hpfPrevX1 = 0.0f, hpfPrevY1 = 0.0f;
 	float hpfPrevX2 = 0.0f, hpfPrevY2 = 0.0f;
 	float hpfAlpha  = 0.9872f;  // overwritten in init() from sampleRate; 100 Hz @ 48 kHz
+
+	float lpfPrev1  = 0.0f;
+	float lpfPrev2  = 0.0f;
+	float lpfAlpha  = 0.3142f;  // overwritten in init() from sampleRate; 3500 Hz @ 48 kHz
 
 	float applyHPF(float x, float& prevX, float& prevY) const noexcept
 	{
 		float y = hpfAlpha * (prevY + x - prevX);
 		prevX = x;
 		prevY = y;
+		return y;
+	}
+
+	float applyLPF(float x, float& prev) const noexcept
+	{
+		float y = prev + lpfAlpha * (x - prev);
+		prev = y;
 		return y;
 	}
 
@@ -363,6 +376,9 @@ struct AudioFallbackState
 
 		// HPF: 1-pole IIR, cutoff 100 Hz.  alpha = 1 / (1 + 2π·fc/sr)
 		hpfAlpha = (float)(1.0 / (1.0 + 2.0 * 3.14159265358979323846 * 100.0 / sampleRate));
+		// LPF: 1-pole IIR, cutoff 3500 Hz.  alpha = 2π·fc / (sr + 2π·fc)
+		lpfAlpha = (float)(2.0 * 3.14159265358979323846 * 3500.0
+		                 / (sampleRate + 2.0 * 3.14159265358979323846 * 3500.0));
 		refreshEvery = 20;
 		novelty1.assign(windowFrames, 0.0f);
 		novelty2.assign(windowFrames, 0.0f);
@@ -388,8 +404,41 @@ struct AudioFallbackState
 		anchorHops = 0;
 		lastEstimateAnchored = false;
 		hpfPrevX1 = hpfPrevY1 = hpfPrevX2 = hpfPrevY2 = 0.0f;
+		lpfPrev1 = lpfPrev2 = 0.0f;
 		noiseFloor1 = noiseFloor2 = 1e-8f;
 		activityGate = false;
+	}
+
+	// Clears the novelty ring and all filter state so the next window rebuilds
+	// from scratch.  Called on the LTC→FAIL edge: the 2.5 s transition hold in
+	// fuseLtcAndAudioFallback previously suppressed *activation* of fallback
+	// but the ring kept ingesting carrier-tail transients the whole time, so
+	// when fallback finally armed the most-recent ANCHORED_WIN frames still
+	// contained hybrid carrier+scene novelty that biased the NCC peak.  Purging
+	// at the edge forces the post-fade window to be scene-only.
+	void purgeNoveltyRing()
+	{
+		std::fill(novelty1.begin(), novelty1.end(), 0.0f);
+		std::fill(novelty2.begin(), novelty2.end(), 0.0f);
+		energyAcc1 = energyAcc2 = 0.0f;
+		prevEnergy1 = prevEnergy2 = 0.0f;
+		hopSampleCounter = 0;
+		hopsSinceRefresh = 0;
+		writePos         = 0;
+		framesFilled     = 0;
+		hpfPrevX1 = hpfPrevY1 = hpfPrevX2 = hpfPrevY2 = 0.0f;
+		lpfPrev1 = lpfPrev2 = 0.0f;
+		noiseFloor1 = noiseFloor2 = 1e-8f;
+		activityGate = false;
+		stableCount  = 0;
+		prevBestLag  = INT_MAX;
+		valid        = false;
+		// Invalidate cached master reference: the stale linearised buffer
+		// held pre-purge master novelty that no longer aligns with the
+		// freshly-zeroed slave ring.  It will be repopulated once master's
+		// own post-purge ring passes WIDE_WIN.
+		hasMasterRef       = false;
+		masterFramesFilled = 0;
 	}
 };
 
@@ -416,7 +465,10 @@ struct AlphaBetaState
 
 	static constexpr double ALPHA            = 0.20;
 	static constexpr double BETA             = 0.02;
-	static constexpr double MAX_VEL_MS_PER_S = 0.20;  // §8 rate limit on |velMsPerS|
+	// §8 rate limit.  Design recommends 0.05–0.20 ms/s with 0.10 as start;
+	// 0.10 rejects acoustic-TDOA contamination from moving sources more
+	// aggressively while still covering realistic recorder-clock drift.
+	static constexpr double MAX_VEL_MS_PER_S = 0.10;
 
 	// Call once at LTC→fallback transition to prime from the last good LTC value.
 	void seed(double d0Ms)
@@ -645,6 +697,14 @@ private:
 	// Used as the absolute sample position passed to handleTimecode so that
 	// master and slave decode-event positions can be compared sample-accurately.
 	int64_t totalSamplesProcessed = 0;
+
+	// Shared DAW-timeline sample position at the current per-sample step
+	// (bufferStartSample + i inside processBlock's loop).  Used where the
+	// master and slave must agree on a common clock — specifically the SM
+	// staleness correction in estimateAudioFallbackOffset and the master
+	// write of m.nov_anchor_sample.  Falls back to totalSamplesProcessed
+	// when no playhead is available, same as bufferStartSample.
+	int64_t currentDawSample = 0;
 
 	//==============================================================================
 	JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AutoSyncAudioProcessor)

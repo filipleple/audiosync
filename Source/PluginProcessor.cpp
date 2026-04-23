@@ -553,11 +553,16 @@ void AutoSyncAudioProcessor::pushAudioAnalysisSample(float ch1, float ch2)
 	if (audFallback.novelty1.empty())
 		return;
 
-	// HPF: strip DC and sub-100 Hz content before accumulating energy
+	// Bandpass 100 Hz – 3500 Hz via cascaded 1-pole HPF + 1-pole LPF.
+	// HPF removes DC / sub-100 Hz rumble that would otherwise dominate the
+	// energy sum; LPF removes wind, HVAC, and codec artefacts above speech
+	// band that add uncorrelated HF energy to the novelty envelope.
 	const float h1 = audFallback.applyHPF(ch1, audFallback.hpfPrevX1, audFallback.hpfPrevY1);
 	const float h2 = audFallback.applyHPF(ch2, audFallback.hpfPrevX2, audFallback.hpfPrevY2);
-	audFallback.energyAcc1 += h1 * h1;
-	audFallback.energyAcc2 += h2 * h2;
+	const float b1 = audFallback.applyLPF(h1, audFallback.lpfPrev1);
+	const float b2 = audFallback.applyLPF(h2, audFallback.lpfPrev2);
+	audFallback.energyAcc1 += b1 * b1;
+	audFallback.energyAcc2 += b2 * b2;
 
 	if (++audFallback.hopSampleCounter < audFallback.hopSamples)
 		return;
@@ -589,8 +594,14 @@ void AutoSyncAudioProcessor::pushAudioAnalysisSample(float ch1, float ch2)
 	const bool  ch2Active = (e2 > 1e-12f) && (e2 > audFallback.noiseFloor2 * dbThresh);
 	audFallback.activityGate = ch1Active || ch2Active;
 
-	float nov1 = std::max(0.0f, e1 - audFallback.prevEnergy1);
-	float nov2 = std::max(0.0f, e2 - audFallback.prevEnergy2);
+	// Log-energy flux (scale-invariant).  Master and slave mics rarely have
+	// matched gain; on linear flux a proportional level difference warps NCC
+	// peaks because the same transient produces proportionally different
+	// magnitudes on each side.  log-flux compares relative energy *changes*,
+	// so the peak pattern aligns regardless of absolute gain.
+	static constexpr float NOV_EPS = 1e-10f;
+	float nov1 = std::max(0.0f, std::log(e1 + NOV_EPS) - std::log(audFallback.prevEnergy1 + NOV_EPS));
+	float nov2 = std::max(0.0f, std::log(e2 + NOV_EPS) - std::log(audFallback.prevEnergy2 + NOV_EPS));
 
 	// Stereo-LTC guard: when LTC is actively decoding on ch1, ch2 is likely also
 	// carrying LTC in a stereo routing (both channels identical).  Scale nov2 to
@@ -621,6 +632,43 @@ void AutoSyncAudioProcessor::pushAudioAnalysisSample(float ch1, float ch2)
 
 void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 {
+	// Default to "not anchored" on every entry.  The flag is read by
+	// fuseLtcAndAudioFallback to pick the NCC confidence threshold; letting
+	// it carry stale state across early-returns (activity gate, ring not
+	// yet filled) would cause the wrong threshold to be applied on the
+	// next coast cycle.  Set true below only when a narrow-window NCC runs
+	// or when the anchor-coast path below publishes deltaAudMs = anchorMs.
+	audFallback.lastEstimateAnchored = false;
+
+	const bool anchorAgeOk =
+		audFallback.hasAnchor
+		&& (juce::Time::currentTimeMillis() - anchorTimestampMs) < (int64_t)ANCHOR_MAX_AGE_MS;
+
+	// Anchor-fresh coast during ring refill.
+	//
+	// After purgeNoveltyRing() fires on the LTC→FAIL edge, framesFilled drops
+	// to 0 and takes ~20 s to reach windowFrames (MASTER_NOV_REF_SIZE).  The
+	// main framesFilled guard below would otherwise block the estimator for
+	// that whole period, leaving audFallback.valid=false and the fuser
+	// outputting Source::None — while the anchor and α-β tracker still hold
+	// the true offset.  Worse, by the time the ring refills the anchor can
+	// age past ANCHOR_MAX_AGE_MS for long fades, forcing wide-mode NCC which
+	// cannot reach offsets beyond ±lagRange·hopMs (±2 s) and locks onto a
+	// spurious peak inside that range.
+	//
+	// The coast keeps deltaAudMs = anchorMs and valid=true so the fuser can
+	// carry the pre-fade offset through the refill.  Marked anchored so the
+	// relaxed confidence threshold is used if the confAud check ever matters.
+	if (anchorAgeOk && audFallback.framesFilled < audFallback.windowFrames)
+	{
+		audFallback.deltaAudMs           = audFallback.anchorMs;
+		audFallback.confAud              = 0.8;
+		audFallback.peakCorr             = 0.0;
+		audFallback.valid                = true;
+		audFallback.lastEstimateAnchored = true;
+		return;
+	}
+
 	if (audFallback.framesFilled < audFallback.windowFrames)
 		return;
 
@@ -648,11 +696,18 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	// ~200 ms old when we read it (two async 0.1 s timers).  Correct by
 	// shifting masterNoveltyRef forward by timeDeltaHops when building
 	// linBuf2, so master and slave frames align to the same DAW time.
+	//
+	// Both sides must use a shared clock — the DAW playhead (currentDawSample)
+	// — not each instance's self-maintained totalSamplesProcessed, which
+	// starts at 0 on prepareToPlay and so differs by the load-time delta
+	// between master and slave processes.  That delta is typically 10–15
+	// hops and produces a systematic ±100–150 ms bias in the anchored NCC
+	// lag (sign depending on which instance loaded first).
 	// ------------------------------------------------------------------
 	int timeDeltaHops = 0;
 	if (masterNovAnchorSample > 0)
 	{
-		const int64_t deltaSamples = totalSamplesProcessed - masterNovAnchorSample;
+		const int64_t deltaSamples = currentDawSample - masterNovAnchorSample;
 		timeDeltaHops = (int)std::round((double)deltaSamples / (double)audFallback.hopSamples);
 		// Clamp: staleness should be 0–200 ms; anything larger is noise.
 		timeDeltaHops = std::max(0, std::min(timeDeltaHops, N / 8));
@@ -666,11 +721,6 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	const int K_eff       = audFallback.anchorHops - timeDeltaHops;
 	const int masterShift = (K_eff > 0) ?  K_eff : 0;
 	const int slaveShift  = (K_eff < 0) ? -K_eff : 0;
-
-	// anchorAgeOk: we have a recent LTC- or NCC-confirmed anchor.
-	const bool anchorAgeOk =
-		audFallback.hasAnchor
-		&& (juce::Time::currentTimeMillis() - anchorTimestampMs) < (int64_t)ANCHOR_MAX_AGE_MS;
 
 	// anchorUsable: age ok, master ref received, AND each side has enough
 	// real (non-zero) history to cover its respective shift plus the NCC
@@ -688,10 +738,24 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	// the LTC value rather than feed the alpha-beta a bogus residual.
 	if (anchorAgeOk && !anchorUsable)
 	{
-		audFallback.deltaAudMs = audFallback.anchorMs;
-		audFallback.confAud    = 0.8;
-		audFallback.peakCorr   = 0.0;
-		audFallback.valid      = true;
+		audFallback.deltaAudMs           = audFallback.anchorMs;
+		audFallback.confAud              = 0.8;
+		audFallback.peakCorr             = 0.0;
+		audFallback.valid                = true;
+		audFallback.lastEstimateAnchored = true;
+		return;
+	}
+
+	// Wide-mode guard: if we hold an anchor (possibly aged out) whose
+	// magnitude exceeds wide-NCC reach, any peak found in ±lagRange is
+	// guaranteed to be spurious and would seed the α-β tracker to a wildly
+	// wrong value.  Hold α-β on its last velocity instead.
+	if (!anchorUsable
+	    && audFallback.hasAnchor
+	    && std::abs(audFallback.anchorHops) > audFallback.lagRange)
+	{
+		audFallback.valid       = false;
+		audFallback.stableCount = 0;
 		return;
 	}
 
@@ -809,23 +873,41 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	const int searchHalf = anchorUsable ? AudioFallbackState::NARROW_HALF
 	                                    : audFallback.lagRange;
 
+	// Cache every NCC evaluation so the parabola interpolator and the
+	// distance-gated runner-up scan (below) can reuse them without
+	// recomputing.  Stack-allocated; sized for the widest search (lagRange=200).
+	static constexpr int CORR_VALS_CAP = 2 * 200 + 1;
+	jassert(2 * searchHalf + 1 <= CORR_VALS_CAP);
+	std::array<double, CORR_VALS_CAP> corrVals{};
+
 	double bestCorr   = -2.0;
-	double secondBest = -2.0;
 	int    bestRelLag = 0;
 
 	for (int lag = -searchHalf; lag <= searchHalf; ++lag)
 	{
 		double corr = nccAt(lag);
+		corrVals[lag + searchHalf] = corr;
 		if (corr > bestCorr)
 		{
-			secondBest = bestCorr;
 			bestCorr   = corr;
 			bestRelLag = lag;
 		}
-		else if (corr > secondBest)
-		{
+	}
+
+	// Distance-gated runner-up.  The original single-pass tracked any second
+	// peak, including lags 1–2 hops either side of the best — which is just
+	// the curvature of the same peak and artificially deflates prominence.
+	// Restrict the runner-up to lags ≥ MIN_PEAK_DIST hops from the best so
+	// prominence measures competition from genuinely distinct peaks only.
+	static constexpr int MIN_PEAK_DIST = 5;
+	double secondBest = -2.0;
+	for (int lag = -searchHalf; lag <= searchHalf; ++lag)
+	{
+		if (std::abs(lag - bestRelLag) < MIN_PEAK_DIST)
+			continue;
+		const double corr = corrVals[lag + searchHalf];
+		if (corr > secondBest)
 			secondBest = corr;
-		}
 	}
 
 	// ------------------------------------------------------------------
@@ -836,9 +918,9 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	double subHopOffset = 0.0;
 	if (bestRelLag > -searchHalf && bestRelLag < searchHalf)
 	{
-		double y0    = nccAt(bestRelLag - 1);
+		double y0    = corrVals[bestRelLag - 1 + searchHalf];
 		double y1    = bestCorr;
-		double y2    = nccAt(bestRelLag + 1);
+		double y2    = corrVals[bestRelLag + 1 + searchHalf];
 		double denom = y2 - 2.0 * y1 + y0;
 		if (std::abs(denom) > 1e-9)
 			subHopOffset = std::max(-0.5, std::min(0.5, -0.5 * (y2 - y0) / denom));
@@ -915,6 +997,12 @@ void AutoSyncAudioProcessor::fuseLtcAndAudioFallback()
 	    && prevChnl1InLtcState != tc_data::LTCState::FAIL)
 	{
 		ltcFadeTimestampMs = juce::Time::currentTimeMillis();
+
+		// Purge the novelty ring so the post-fade NCC window cannot include
+		// LTC-carrier-tail transients from before the edge.  The 2.5 s hold
+		// below gives the ring time to refill with clean scene-only data
+		// before fallback is permitted to activate.
+		audFallback.purgeNoveltyRing();
 	}
 	prevChnl1InLtcState = chnl1_in.ltc_state;
 
@@ -1030,7 +1118,7 @@ void AutoSyncAudioProcessor::writeMasterSlot()
 
 	m.tc_ref_ms           = tc_ms;
 	m.ref_decode_sample   = chnl1_in.last_decode_sample;
-	m.nov_anchor_sample   = totalSamplesProcessed;  // abs sample pos at this write
+	m.nov_anchor_sample   = currentDawSample;  // shared DAW-timeline position
 	m.Q_ref               = chnl1_in.Q_LTC;
 	m.ltc_state           = (uint8_t)chnl1_in.ltc_state;
 	m.locked              = chnl1_in.locked ? 1u : 0u;
@@ -1093,6 +1181,8 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 
 		for (int i = 0; i < buffer.getNumSamples(); ++i)
 		{
+			currentDawSample = bufferStartSample + i;
+
 			// Read from the designated LTC channel; always decode into chnl1_in.
 			float ltcSample = (ltcChannel == 0) ? write1[i] : write2[i];
 			processTimeCode(ltcSample, chnl1_in, input_ch1, i, (float)currentSampleRate, fpsIndex, bufferStartSample + i);
@@ -1145,6 +1235,8 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 
 	for (int i = 0; i < buffer.getNumSamples(); ++i)
 	{
+		currentDawSample = bufferStartSample + i;
+
 		// Fill const_buf for BOTH channels so delay() can read from them immediately
 		// (without this, the channel whose const_buf is empty outputs silence for
 		// the first delay_size samples while its delay_buf fills up).
