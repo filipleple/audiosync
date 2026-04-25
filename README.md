@@ -71,5 +71,7 @@ msbuild "Builds/VisualStudio2022/AudioSync.sln"
 
 ## Authors and Acknowledgements
 
-- Filip Lewinski
-- Dr. Bartłomiej Mróz
+- Dr. Bartłomiej Mróz - problem diagnosis and formulation, supervision and
+  guidance
+- Filip Lewinski - author
+- Tsimafei Dalhou - initial work on LTC decoding and synchronization via delay
