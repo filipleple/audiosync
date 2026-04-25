@@ -1,10 +1,12 @@
-# Automatic Synchronization of Sound with 360 Camera
+# AudioSync
 
 **VST3 plugin** written in C++ using the JUCE framework. It automatically synchronizes multiple
 360-degree camera recordings by decoding SMPTE LTC (Linear Time Code) timecode from audio
 tracks, computing per-track delays, and applying them in real time. When LTC degrades or cuts
 out, an audio-based fallback (Normalized Cross-Correlation on novelty curves) takes over
 seamlessly.
+
+![](ui.png)
 
 ## Architecture
 
@@ -55,23 +57,19 @@ msbuild "Builds/VisualStudio2022/AudioSync.sln"
 
 ## Usage
 
-1. In your DAW (REAPER recommended), load the VST3 on the reference LTC track. Set its
-   role to **Master** and choose a group name.
-2. Load a second instance on each additional track. Set its role to **Slave** and use the
-   same group name.
-3. Press play. The master displays the decoded timecode (HH:MM:SS:FF). Each slave displays
-   its computed delay in milliseconds and frames, and applies the delay automatically.
+1. In your DAW, load the VST3 on the reference LTC track. Set its role to
+  **Master** and choose a group name.
+2. Load a second instance on each additional track. Set its role to **Slave**
+   and use the same group name.
+3. Press play. The master displays the decoded timecode (HH:MM:SS:FF). Each
+   slave displays its computed delay in milliseconds and frames, and applies the
+   delay automatically.
 4. A manual correction slider is available on each instance for fine-tuning.
-5. When LTC quality drops (Q_LTC < 0.5), the plugin transparently switches to audio-based
-   delay tracking. The diagnostics card shows the active source (LTC / AUD / NONE).
+5. When LTC quality drops (Q_LTC < 0.5), the plugin transparently switches to
+   audio-based delay tracking. The diagnostics card shows the active source (LTC
+   / AUD / NONE).
 
 ## Authors and Acknowledgements
 
 - Filip Lewinski
 - Dr. Bartłomiej Mróz
-- Dr. Piotr Odya
-
-## Project Status
-
-Active development. Core LTC decoding, master-slave IPC, and audio fallback are functional.
-Known open items: drift during the LTC-to-speech transition (`current_problem.md`).
