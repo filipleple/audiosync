@@ -1,6 +1,6 @@
 /*
   ==============================================================================
-    PluginEditor.h  —  UI redesign, styling phase
+    PluginEditor.h  -  UI redesign, styling phase
     Design reference: 900 × 620 px (scales proportionally)
   ==============================================================================
 */
@@ -21,11 +21,11 @@ constexpr int GAP_SECTION = 10;
 constexpr int GAP_H       = 12;
 
 // ============================================================
-// Theme — colours and typography (defined in .cpp)
+// Theme - colours and typography (defined in .cpp)
 // ============================================================
 namespace Theme
 {
-    // Colours — ARGB
+    // Colours - ARGB
     inline const juce::Colour bg          = juce::Colour(0xFF1C1C1E);  // window background
     inline const juce::Colour cardBg      = juce::Colour(0xFF2C2C2E);  // card fill
     inline const juce::Colour cardBorder  = juce::Colour(0xFF3A3A3C);  // card outline
@@ -57,7 +57,7 @@ namespace Theme
 }
 
 // ============================================================
-// BadgeComponent — pill-shaped label
+// BadgeComponent - pill-shaped label
 // ============================================================
 class BadgeComponent : public juce::Component
 {
@@ -100,7 +100,7 @@ private:
 };
 
 // ============================================================
-// SignalCard  — left card: timecodes + FPS selector
+// SignalCard  - left card: timecodes + FPS selector
 // ============================================================
 class SignalCard : public juce::Component
 {
@@ -127,7 +127,7 @@ private:
 };
 
 // ============================================================
-// DelaySyncCard  — right card: delay metrics + toggle + slider
+// DelaySyncCard  - right card: delay metrics + toggle + slider
 // ============================================================
 class DelaySyncCard : public juce::Component
 {

@@ -371,5 +371,5 @@ Tune in this order:
 
 If you want, I can turn this into C++-level pseudocode for the worker estimator and the variable-delay engine, including the ring-buffer layout and the exact GCC-PHAT peak-picking steps.
 
-[1]: https://speechprocessingbook.aalto.fi/Enhancement/tdoa.html "11.8.3. Time-Delay of Arrival (TDoA) and Direction of Arrival (DoA) Estimation — Introduction to Speech Processing"
+[1]: https://speechprocessingbook.aalto.fi/Enhancement/tdoa.html "11.8.3. Time-Delay of Arrival (TDoA) and Direction of Arrival (DoA) Estimation - Introduction to Speech Processing"
 [2]: https://steinbergmedia.github.io/vst3_dev_portal/pages/FAQ/Processing.html "Processing - VST 3 Developer Portal"

@@ -1,6 +1,6 @@
 /*
   ==============================================================================
-    PluginEditor.cpp  —  UI redesign, styling phase
+    PluginEditor.cpp  -  UI redesign, styling phase
   ==============================================================================
 */
 
@@ -47,7 +47,7 @@ static void styleMeta(juce::Label& l)
     l.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
 }
 
-// Style a label as a right-aligned metric value (transparent bg — box drawn in paint).
+// Style a label as a right-aligned metric value (transparent bg - box drawn in paint).
 static void styleValue(juce::Label& l)
 {
     l.setFont(juce::Font(Theme::fontValue, juce::Font::bold));
@@ -168,7 +168,7 @@ SignalCard::SignalCard()
     styleFieldLabel(inputLabel);
     styleFieldLabel(outputLabel);
 
-    // Timecode displays — dominant element
+    // Timecode displays - dominant element
     inputTimecode.setText("--:--:--:--",  juce::dontSendNotification);
     outputTimecode.setText("--:--:--:--", juce::dontSendNotification);
     {
@@ -298,7 +298,7 @@ DelaySyncCard::DelaySyncCard()
     styleFieldLabel(toggleLabel);
     styleFieldLabel(sliderLabel);
 
-    // Value labels — right-aligned, transparent bg (box drawn in paint)
+    // Value labels - right-aligned, transparent bg (box drawn in paint)
     delayMsValue.setText("--",   juce::dontSendNotification);
     delayFramesValue.setText("--", juce::dontSendNotification);
     midiMsValue.setText("--",    juce::dontSendNotification);
@@ -706,7 +706,7 @@ AutoSyncAudioProcessorEditor::AutoSyncAudioProcessorEditor(AutoSyncAudioProcesso
 AutoSyncAudioProcessorEditor::~AutoSyncAudioProcessorEditor() {}
 
 // ============================================================
-// paint  — window background
+// paint  - window background
 // ============================================================
 
 void AutoSyncAudioProcessorEditor::paint(juce::Graphics& g)
@@ -715,7 +715,7 @@ void AutoSyncAudioProcessorEditor::paint(juce::Graphics& g)
 }
 
 // ============================================================
-// resized  — top-level Rectangle slicing
+// resized  - top-level Rectangle slicing
 // ============================================================
 
 void AutoSyncAudioProcessorEditor::resized()
@@ -743,7 +743,7 @@ void AutoSyncAudioProcessorEditor::resized()
 }
 
 // ============================================================
-// timerCallback  — push processor state to all sub-components
+// timerCallback  - push processor state to all sub-components
 // ============================================================
 
 void AutoSyncAudioProcessorEditor::timerCallback()

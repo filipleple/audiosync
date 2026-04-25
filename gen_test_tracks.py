@@ -7,13 +7,13 @@ Output: stereo WAV, 44100 Hz, 25 fps.
   CH2 (R): same LTC + 2-frame offset (= 80 ms), with increasing degradation.
 
 Tracks:
-  01_clean.wav               — perfect signal            → VALID,   Q > 0.85
-  02_snr20dB.wav             — light noise               → VALID
-  03_snr10dB.wav             — moderate noise            → VALID / SUSPECT
-  04_snr6dB_dropouts.wav     — SNR 6 dB + dropouts       → SUSPECT
-  05_snr3dB_heavy.wav        — SNR 3 dB + heavy dropouts → FAIL / fallback
-  06_noise_floor.wav         — undecodable               → FAIL, fallback=YES
-  07_gradual_degradation.wav — 60 s ramp clean → noise floor
+  01_clean.wav               - perfect signal            → VALID,   Q > 0.85
+  02_snr20dB.wav             - light noise               → VALID
+  03_snr10dB.wav             - moderate noise            → VALID / SUSPECT
+  04_snr6dB_dropouts.wav     - SNR 6 dB + dropouts       → SUSPECT
+  05_snr3dB_heavy.wav        - SNR 3 dB + heavy dropouts → FAIL / fallback
+  06_noise_floor.wav         - undecodable               → FAIL, fallback=YES
+  07_gradual_degradation.wav - 60 s ramp clean → noise floor
 
 Usage:
   python3 gen_test_tracks.py
@@ -203,25 +203,25 @@ def main():
     print("-" * 72)
 
     # ------------------------------------------------------------------ 01 --
-    # Clean signal — should lock immediately, VALID throughout
+    # Clean signal - should lock immediately, VALID throughout
     c1 = scale(base1, 0.70)
     c2 = scale(base2, 0.70)
     write_wav(os.path.join(out_dir, '01_clean.wav'), c1, c2, sr)
 
     # ------------------------------------------------------------------ 02 --
-    # SNR 20 dB — very light noise, barely perceptible
+    # SNR 20 dB - very light noise, barely perceptible
     c1 = add_noise(scale(base1, 0.70), 20)
     c2 = add_noise(scale(base2, 0.70), 20)
     write_wav(os.path.join(out_dir, '02_snr20dB.wav'), c1, c2, sr)
 
     # ------------------------------------------------------------------ 03 --
-    # SNR 10 dB — audible noise, decoder should still hold VALID or border
+    # SNR 10 dB - audible noise, decoder should still hold VALID or border
     c1 = add_noise(scale(base1, 0.70), 10)
     c2 = add_noise(scale(base2, 0.70), 10)
     write_wav(os.path.join(out_dir, '03_snr10dB.wav'), c1, c2, sr)
 
     # ------------------------------------------------------------------ 04 --
-    # SNR 6 dB + 0.5 dropouts/sec (~30 ms each) — SUSPECT expected
+    # SNR 6 dB + 0.5 dropouts/sec (~30 ms each) - SUSPECT expected
     c1 = add_noise(scale(base1, 0.50),  6)
     c2 = add_noise(scale(base2, 0.50),  6)
     c1 = add_dropouts(c1, sr, rate_per_sec=0.5, avg_dur_ms=30)
@@ -229,7 +229,7 @@ def main():
     write_wav(os.path.join(out_dir, '04_snr6dB_dropouts.wav'), c1, c2, sr)
 
     # ------------------------------------------------------------------ 05 --
-    # SNR 3 dB + 2 dropouts/sec (~50 ms each) — FAIL on most windows
+    # SNR 3 dB + 2 dropouts/sec (~50 ms each) - FAIL on most windows
     c1 = add_noise(scale(base1, 0.30),  3)
     c2 = add_noise(scale(base2, 0.30),  3)
     c1 = add_dropouts(c1, sr, rate_per_sec=2.0, avg_dur_ms=50)
@@ -237,7 +237,7 @@ def main():
     write_wav(os.path.join(out_dir, '05_snr3dB_heavy.wav'), c1, c2, sr)
 
     # ------------------------------------------------------------------ 06 --
-    # At noise floor: 0 dB SNR + constant bursts — undecodable, fallback=YES
+    # At noise floor: 0 dB SNR + constant bursts - undecodable, fallback=YES
     c1 = add_noise(scale(base1, 0.08),  0)
     c2 = add_noise(scale(base2, 0.08),  0)
     c1 = add_dropouts(c1, sr, rate_per_sec=5.0, avg_dur_ms=80)
@@ -263,7 +263,7 @@ def main():
         (0.60,   10, 0.0,  0),   # 20-30s  SNR 10 dB
         (0.50,    6, 0.5, 30),   # 30-40s  SNR 6 dB + dropouts
         (0.30,    3, 2.0, 50),   # 40-50s  SNR 3 dB + heavy dropouts
-        (0.08,    0, 5.0, 80),   # 50-60s  noise floor — fallback
+        (0.08,    0, 5.0, 80),   # 50-60s  noise floor - fallback
     ]
     labels = [
         "clean",
@@ -297,7 +297,7 @@ def main():
     print("  04_snr6dB_dropouts    SUSPECT  Q ≈ 0.50–0.70")
     print("  05_snr3dB_heavy       FAIL     Q ≈ 0.20–0.50")
     print("  06_noise_floor        FAIL     Q ≈ 0.00–0.20  fallback=YES")
-    print("  07_gradual_degradation — all of the above in one 60s file")
+    print("  07_gradual_degradation - all of the above in one 60s file")
 
 
 if __name__ == '__main__':

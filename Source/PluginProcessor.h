@@ -297,9 +297,9 @@ struct AudioFallbackState
 	float noiseFloor2  = 1e-8f;
 	bool  activityGate = false;
 	// Asymmetric noise-floor follower.
-	// RISE: slow (τ ≈ 2 s at 10 ms/hop) — prevents gate from fluttering open on
+	// RISE: slow (τ ≈ 2 s at 10 ms/hop) - prevents gate from fluttering open on
 	//       transient spikes.
-	// FALL: fast (τ ≈ 50 ms at 10 ms/hop) — floor drops quickly after a loud
+	// FALL: fast (τ ≈ 50 ms at 10 ms/hop) - floor drops quickly after a loud
 	//       signal (e.g. LTC carrier) stops, so quieter speech can trip the gate
 	//       within ~150-250 ms instead of waiting 5-15 s.
 	static constexpr float NOISE_FLOOR_TC_RISE = 0.995f;
@@ -480,8 +480,8 @@ struct AlphaBetaState
 	}
 
 	// Called every NCC refresh cycle (~200 ms).
-	// measuredMs    — NCC/fusion output (ignored when !measuredValid).
-	// measuredValid — false means coast: predict forward on current velocity.
+	// measuredMs    - NCC/fusion output (ignored when !measuredValid).
+	// measuredValid - false means coast: predict forward on current velocity.
 	void update(double measuredMs, bool measuredValid)
 	{
 		const int64_t now = juce::Time::currentTimeMillis();
@@ -499,7 +499,7 @@ struct AlphaBetaState
 		else
 		{
 			estMs = predicted;
-			// velocity unchanged — coast
+			// velocity unchanged - coast
 		}
 
 		// §8: clamp velocity so the fallback can't track acoustic source movement
@@ -665,7 +665,7 @@ private:
 	// Max time the anchor may stand without either a fresh LTC confirmation
 	// or a valid anchored NCC hit.  A coherent audio fallback refreshes the
 	// timestamp each cycle (see fuseLtcAndAudioFallback), so this only fires
-	// when both LTC and NCC have been dark for this long — i.e. the scene
+	// when both LTC and NCC have been dark for this long - i.e. the scene
 	// genuinely went silent.  30 s buys a slow source to come back without
 	// losing alignment; beyond that, we fall back to wide re-acquisition.
 	static constexpr double ANCHOR_MAX_AGE_MS = 30000.0;
@@ -700,7 +700,7 @@ private:
 
 	// Shared DAW-timeline sample position at the current per-sample step
 	// (bufferStartSample + i inside processBlock's loop).  Used where the
-	// master and slave must agree on a common clock — specifically the SM
+	// master and slave must agree on a common clock - specifically the SM
 	// staleness correction in estimateAudioFallbackOffset and the master
 	// write of m.nov_anchor_sample.  Falls back to totalSamplesProcessed
 	// when no playhead is available, same as bufferStartSample.

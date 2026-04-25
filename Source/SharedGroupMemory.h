@@ -8,7 +8,7 @@
     instances run as Slaves, each writing one SlaveSlot and reading MasterSlot.
 
     All cross-instance reads/writes use a seqcount pattern (see §5 of
-    master-slave-architecture.md).  The atomics involved MUST be lock-free —
+    master-slave-architecture.md).  The atomics involved MUST be lock-free -
     this is asserted at compile time below.
 
     Platform backends
@@ -18,7 +18,7 @@
 
     The shared region is named  "/AUTOSYNC2_<groupName>"  on POSIX  (appears
     under /dev/shm/ on Linux) and  "Local\AUTOSYNC2_<groupName>"  on Windows.
-    It persists until the OS is rebooted or until explicitly unlinked — this is
+    It persists until the OS is rebooted or until explicitly unlinked - this is
     intentional so that a plugin restart attaches to the existing region without
     losing data from other instances.  The "2" suffix guards against attaching
     to segments produced by an older plugin build with a different struct
@@ -194,7 +194,7 @@ public:
     }
 
     // Unmaps the region.  Safe to call from releaseResources().
-    // Does NOT unlink/destroy the segment — other instances keep their mapping.
+    // Does NOT unlink/destroy the segment - other instances keep their mapping.
     void close()
     {
         if (ptr == nullptr)
@@ -241,7 +241,7 @@ private:
 
         if (hMapping == nullptr)
         {
-            // No existing mapping — create one backed by the paging file.
+            // No existing mapping - create one backed by the paging file.
             // Windows zero-initialises the memory on creation.
             hMapping = CreateFileMappingA(
                 INVALID_HANDLE_VALUE,

@@ -1,4 +1,4 @@
-# Audio Fallback Synchronisation Layer — Engineering Documentation
+# Audio Fallback Synchronisation Layer - Engineering Documentation
 
 **Applies to:** `PluginProcessor.h/cpp` additions committed after base version 1.4
 **Depends on:** `docs.md` (base LTC decoder and delay engine), `quality_scoring.md` (Q_LTC scoring)
@@ -6,7 +6,7 @@
 This document covers the audio-domain lag estimator, the fusion policy that arbitrates between
 LTC and the audio estimator, and the phase-2 delay engine changes that allow the fusion output
 to steer compensation. It does not re-explain SMPTE LTC, the BMC decoder, `calc_delay()`, or
-the Q_LTC windowed quality metrics — those are in the documents above.
+the Q_LTC windowed quality metrics - those are in the documents above.
 
 ---
 
@@ -57,8 +57,8 @@ the Q_LTC windowed quality metrics — those are in the documents above.
 ## 1. Motivation and Scope
 
 The LTC decoder (documented in `docs.md`) decodes timecodes as long as the LTC signal is intact
-and dominant. When the signal degrades — through noise, dropouts, level loss, or being mixed with
-programme audio at similar amplitude — `Q_LTC` drops and `fallback_requested` is raised. At that
+and dominant. When the signal degrades - through noise, dropouts, level loss, or being mixed with
+programme audio at similar amplitude - `Q_LTC` drops and `fallback_requested` is raised. At that
 point there is no fallback: the plugin reports the last decoded offset or nothing.
 
 The audio fallback addresses this by maintaining a second, independent lag estimate derived from
@@ -153,7 +153,7 @@ nov[n] = max(0,  E[n] - E[n-1])
 ```
 
 This is a half-wave rectified first difference of the short-time energy. It is non-zero only
-when the signal becomes louder — i.e., at onsets, transient attacks, and the rising edges of
+when the signal becomes louder - i.e., at onsets, transient attacks, and the rising edges of
 speech phonemes.
 
 ```cpp
@@ -173,8 +173,8 @@ find strong spurious peaks at every multiple of the LTC frame period (40 ms at 2
 the LTC bit structure repeats periodically. The NCC would be unable to distinguish the true lag
 from `true_lag ± k × 40 ms`.
 
-**Novelty** breaks this periodicity. LTC has nearly constant power — its novelty is near zero.
-Programme audio has irregular onsets — its novelty is sparse and aperiodic. The novelty function
+**Novelty** breaks this periodicity. LTC has nearly constant power - its novelty is near zero.
+Programme audio has irregular onsets - its novelty is sparse and aperiodic. The novelty function
 therefore acts as a soft detector of acoustic events, producing a sparse signal whose
 cross-correlation is dominated by shared acoustic content rather than the LTC waveform structure.
 
@@ -301,7 +301,7 @@ for (int lag = -L; lag <= L; ++lag)
 }
 ```
 
-If σ₁ < 1e-6 or σ₂ < 1e-6 (one channel has effectively constant novelty — no detectable
+If σ₁ < 1e-6 or σ₂ < 1e-6 (one channel has effectively constant novelty - no detectable
 events), the estimator exits without updating: `valid = false`, `stableCount = 0`.
 
 ### 4.3 Computational Cost
@@ -368,12 +368,12 @@ prominence = (r₁ - max(0, r₂)) / (r₁ + ε)
 
 Range: [0, 1].
 
-- **Prominence → 1:** a single sharp, isolated peak — the correct lag is unambiguous.
-- **Prominence → 0:** the best lag is barely above the runner-up — either the content is too
+- **Prominence → 1:** a single sharp, isolated peak - the correct lag is unambiguous.
+- **Prominence → 0:** the best lag is barely above the runner-up - either the content is too
   repetitive (e.g., a regular metronome at a period close to the lag), or the signal is too
   weak to form any coherent peak.
 
-The `max(0, r₂)` term handles the case where the second-best is negative — a trivially
+The `max(0, r₂)` term handles the case where the second-best is negative - a trivially
 prominent peak that should not be penalised for having negative second-best.
 
 ### 5.2 Stability
@@ -449,7 +449,7 @@ HPF, the noise floor estimate is inflated by the carrier, and the activity gate 
 than necessary once the LTC stops. The 100 Hz pole removes DC and sub-bass content without
 affecting the speech/transient band used by the novelty estimator.
 
-The HPF does not band-limit the upper end — wind, HVAC artefacts, and codec noise above
+The HPF does not band-limit the upper end - wind, HVAC artefacts, and codec noise above
 3.5 kHz are still included. A low-pass stage would improve selectivity but is not yet
 implemented (see `what_was_missing.md`).
 
@@ -594,7 +594,7 @@ estMs += velMsPerS * dtS
 
 1. At the first LTC→fallback transition (seeds from last good `d_ms`).
 2. When the NCC estimate jumps more than 150 ms from the tracker's current `estMs`
-   (large-jump fast path — handles manual track shifts in the DAW).
+   (large-jump fast path - handles manual track shifts in the DAW).
 
 The 150 ms threshold is above normal NCC jitter (±10 ms one hop) but below a typical
 manual re-sync operation, so spurious NCC outliers are absorbed by the tracker rather
@@ -679,7 +679,7 @@ elif fusion.source == AudioFallback:
      targetMs = fusion.selectedMs    (last NCC estimate, updated every 200 ms)
 
 elif activeDelayMs != 0:
-     targetMs = activeDelayMs        (hold last committed value — see §7.2)
+     targetMs = activeDelayMs        (hold last committed value - see §7.2)
 
 else:
      targetMs = d_ms                 (pre-fusion fallback: raw LTC, initial startup)
@@ -879,7 +879,7 @@ every ~0.1 s (diagnostic block):
 ```
 
 `pushAudioAnalysisSample` must be called **before** `delay()` modifies the write pointers.
-The fallback operates on raw, undelayed input samples — the K_eff anchor mechanism in
+The fallback operates on raw, undelayed input samples - the K_eff anchor mechanism in
 `estimateAudioFallbackOffset` accounts for the inter-track time offset mathematically
 rather than by buffering delayed audio.
 
@@ -895,7 +895,7 @@ rather than by buffering delayed audio.
 
 The dominant cost is the NCC, which runs at most 5 times per second. At a typical DAW block
 size of 512 samples, the NCC fires approximately once every 17 blocks. Within those 17 blocks
-it adds about 60,200/17 ≈ 3,540 MACs per block — negligible relative to the LTC decoder's
+it adds about 60,200/17 ≈ 3,540 MACs per block - negligible relative to the LTC decoder's
 per-sample processing.
 
 ---
@@ -932,10 +932,10 @@ rationale):
 
 | Field | Type | Content |
 |---|---|---|
-| `aud_deltaMs` | `double` | `audFallback.deltaAudMs` — last NCC lag estimate in ms |
-| `aud_conf` | `double` | `audFallback.confAud` — combined confidence [0, 1] |
-| `aud_fusionSource` | `int` | `(int)fusion.source` — 0=None, 1=LTC, 2=AudioFallback |
-| `aud_activeDelayMs` | `double` | `activeDelayMs` — offset currently in the delay engine |
+| `aud_deltaMs` | `double` | `audFallback.deltaAudMs` - last NCC lag estimate in ms |
+| `aud_conf` | `double` | `audFallback.confAud` - combined confidence [0, 1] |
+| `aud_fusionSource` | `int` | `(int)fusion.source` - 0=None, 1=LTC, 2=AudioFallback |
+| `aud_activeDelayMs` | `double` | `activeDelayMs` - offset currently in the delay engine |
 
 The GUI label `qual_fallback_label` formats these as:
 
@@ -981,7 +981,7 @@ events. This is the target operating condition for the fallback.
 LTC dominant for the first 30 seconds (audio fallback accumulates evidence), sharp LTC cut at
 30 seconds (fallback takes over). A gradual LTC fade creates an intermediate zone where LTC is
 too degraded to decode (speech cancels transitions at the hysteresis threshold) but the audio
-fallback has not yet accumulated a full window — both paths fail simultaneously.
+fallback has not yet accumulated a full window - both paths fail simultaneously.
 
 ---
 
@@ -999,7 +999,7 @@ fallback has not yet accumulated a full window — both paths fail simultaneousl
 | 50–60 s | 0.00 | 0.20 | FAIL, src=AUD, applied=+80ms (stable) |
 
 The LTC amplitude of 0.70 with speech at 0.20 gives a 3.5× amplitude ratio (≈ 11 dB). At this
-ratio, the LTC transitions at ±0.70 cannot be cancelled by speech peaks at ±0.20 — the
+ratio, the LTC transitions at ±0.70 cannot be cancelled by speech peaks at ±0.20 - the
 combined signal in the LTC-positive half-cycle ranges from 0.50 to 0.90, always above the
 threshold at 0.8 × 0.70 = 0.56. The decoder is reliable throughout the first 30 seconds.
 

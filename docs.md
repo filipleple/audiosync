@@ -1,4 +1,4 @@
-# Technical Documentation — "AudioSync" JUCE VST Plugin
+# Technical Documentation - "AudioSync" JUCE VST Plugin
 
 **Version:** 1.4 (UI label), plugin version string 1.0.0
 **Format:** VST3, AU, Standalone
@@ -11,8 +11,8 @@
 1. [Project Overview](#1-project-overview)
 2. [Source File Structure](#2-source-file-structure)
 3. [The `tc_data` Class](#3-the-tc_data-class)
-4. [SMPTE LTC Timecode — Format Reference](#4-smpte-ltc-timecode--format-reference)
-5. [LTC Decoder — `handleTimecode()`](#5-ltc-decoder--handletimecode)
+4. [SMPTE LTC Timecode - Format Reference](#4-smpte-ltc-timecode--format-reference)
+5. [LTC Decoder - `handleTimecode()`](#5-ltc-decoder--handletimecode)
    - 5.1 [Pulse Size Calculation](#51-pulse-size-calculation)
    - 5.2 [DC Offset Removal (High-Pass Filter)](#52-dc-offset-removal-high-pass-filter)
    - 5.3 [Silence / Loss-of-Signal Detection](#53-silence--loss-of-signal-detection)
@@ -23,21 +23,21 @@
    - 5.8 [Sync Word Detection](#58-sync-word-detection)
    - 5.9 [Time Field Extraction (BCD Decoding)](#59-time-field-extraction-bcd-decoding)
    - 5.10 [Change Detection via `new_time`](#510-change-detection-via-new_time)
-6. [`processTimeCode()` — Per-Sample Wrapper](#6-processtimecode--per-sample-wrapper)
-7. [`calc_delay()` — Timecode Difference Calculation](#7-calc_delay--timecode-difference-calculation)
+6. [`processTimeCode()` - Per-Sample Wrapper](#6-processtimecode--per-sample-wrapper)
+7. [`calc_delay()` - Timecode Difference Calculation](#7-calc_delay--timecode-difference-calculation)
    - 7.1 [Frame-Based Arithmetic](#71-frame-based-arithmetic)
    - 7.2 [Stability / Outlier Filter](#72-stability--outlier-filter)
 8. [Audio Delay Engine](#8-audio-delay-engine)
-   - 8.1 [`handle_const_delay()` — Historical Lookahead Buffer](#81-handle_const_delay--historical-lookahead-buffer)
-   - 8.2 [`delay()` — Sample-Level Delay Line](#82-delay--sample-level-delay-line)
-9. [`processBlock()` — Main Audio Processing Loop](#9-processblock--main-audio-processing-loop)
+   - 8.1 [`handle_const_delay()` - Historical Lookahead Buffer](#81-handle_const_delay--historical-lookahead-buffer)
+   - 8.2 [`delay()` - Sample-Level Delay Line](#82-delay--sample-level-delay-line)
+9. [`processBlock()` - Main Audio Processing Loop](#9-processblock--main-audio-processing-loop)
    - 9.1 [Channel Routing](#91-channel-routing)
    - 9.2 [MIDI Output](#92-midi-output)
    - 9.3 [Per-Sample Processing Loop](#93-per-sample-processing-loop)
    - 9.4 [Delay Stability Smoothing](#94-delay-stability-smoothing)
    - 9.5 [Active Delay Routing](#95-active-delay-routing)
    - 9.6 [Inactive (Bypass) Mode](#96-inactive-bypass-mode)
-10. [GUI — `PluginEditor`](#10-gui--plugineditor)
+10. [GUI - `PluginEditor`](#10-gui--plugineditor)
     - 10.1 [Layout and Controls](#101-layout-and-controls)
     - 10.2 [Timer-Based State Polling](#102-timer-based-state-polling)
     - 10.3 [FPS Selector](#103-fps-selector)
@@ -66,22 +66,22 @@ The plugin is intended to be loaded in a DAW (the README cites REAPER) on a ster
 
 ```
 Source/
-  PluginProcessor.h     — tc_data class definition; AutoSyncAudioProcessor declaration
-  PluginProcessor.cpp   — All DSP logic: LTC decoder, delay engine, processBlock
-  PluginEditor.h        — AutoSyncAudioProcessorEditor declaration
-  PluginEditor.cpp      — GUI layout, timer callback, user controls
+  PluginProcessor.h     - tc_data class definition; AutoSyncAudioProcessor declaration
+  PluginProcessor.cpp   - All DSP logic: LTC decoder, delay engine, processBlock
+  PluginEditor.h        - AutoSyncAudioProcessorEditor declaration
+  PluginEditor.cpp      - GUI layout, timer callback, user controls
 JuceLibraryCode/
-  JucePluginDefines.h   — Auto-generated plugin metadata macros
-  JuceHeader.h          — Aggregated JUCE module header
-  include_juce_*.cpp/mm — JUCE module compilation units
-AudioSync.jucer   — Projucer project file
+  JucePluginDefines.h   - Auto-generated plugin metadata macros
+  JuceHeader.h          - Aggregated JUCE module header
+  include_juce_*.cpp/mm - JUCE module compilation units
+AudioSync.jucer   - Projucer project file
 ```
 
 The entire processing logic lives in **`PluginProcessor.cpp`**. There are four free (non-member) inline functions at file scope:
 
 | Function | Role |
 |---|---|
-| `handleTimecode()` | Core LTC decoder — operates on one sample |
+| `handleTimecode()` | Core LTC decoder - operates on one sample |
 | `handle_const_delay()` | Feeds the historical sample ring buffer |
 | `delay()` | Applies a variable-length delay to one sample |
 | `calc_delay()` | Converts two decoded timecodes to a millisecond offset |
@@ -190,7 +190,7 @@ Resets all decoder and delay state to initial values. Called when the measured d
 
 ---
 
-## 4. SMPTE LTC Timecode — Format Reference
+## 4. SMPTE LTC Timecode - Format Reference
 
 LTC (Longitudinal Timecode, SMPTE 12M) is an audio-bandwidth signal that encodes a timecode of the form **HH:MM:SS:FF** (hours, minutes, seconds, frames).
 
@@ -202,7 +202,7 @@ LTC uses Biphase Mark Code (also called FM or differential Manchester coding) to
 - A **'1'** bit has an **additional** transition at the **mid-point** of the cell, yielding **two** transitions per cell.
 - A **'0'** bit has **no** mid-cell transition, yielding **one** transition per cell.
 
-This means the decoder never needs to know absolute polarity — only the count of transitions within a bit period determines the bit value.
+This means the decoder never needs to know absolute polarity - only the count of transitions within a bit period determines the bit value.
 
 ### Frame Structure
 
@@ -247,7 +247,7 @@ The `fps` selector in the GUI (ComboBox) sets `audioProcessor.fps`, which contro
 
 ---
 
-## 5. LTC Decoder — `handleTimecode()`
+## 5. LTC Decoder - `handleTimecode()`
 
 ```cpp
 inline void handleTimecode(const long double& sample, tc_data& data,
@@ -321,9 +321,9 @@ if (data.sillen > data.pulsesize * 2.2)
 
 `sillen` counts audio samples since the last detected zero-crossing. If more than `2.2 × pulsesize` samples pass without any transition (i.e., longer than one complete BMC bit cell), the decoder considers the signal absent or corrupted and resets:
 
-- `syncpos = -1` — loses frame sync
-- `gotbit = -1` — discards any partially accumulated bit
-- `syncstate = 1` — enters "searching for sync" state
+- `syncpos = -1` - loses frame sync
+- `gotbit = -1` - discards any partially accumulated bit
+- `syncstate = 1` - enters "searching for sync" state
 
 At 30 fps: `2.2 × 9.1875 ≈ 20.2` samples (≈ 0.46 ms). This is tight enough to detect even a single dropped cycle.
 
@@ -336,7 +336,7 @@ if (data.threshold < data.minthresh)
     data.threshold = data.minthresh;
 ```
 
-`threshold` is a running exponential moving average of the absolute (rectified) signal amplitude. The smoothing coefficient `threshenv = e^(-1 / (0.1 × 44100))` gives a time constant of 100 ms — slow enough to follow gradual level changes but fast enough to track level drops.
+`threshold` is a running exponential moving average of the absolute (rectified) signal amplitude. The smoothing coefficient `threshenv = e^(-1 / (0.1 × 44100))` gives a time constant of 100 ms - slow enough to follow gradual level changes but fast enough to track level drops.
 
 **Purpose:** LTC signals may arrive at varying levels depending on the playback device and cable length. A fixed threshold would either miss weak signals or trigger spuriously on noise. The adaptive threshold anchors the crossing detector at 80% of the recent peak amplitude (`±threshold × 0.8`).
 
@@ -379,9 +379,9 @@ A bit is **committed** when the interval since the last committed bit exceeds `1
 
 | `gotbit` value at commit time | Interpretation | Committed bit |
 |---|---|---|
-| 0 (exactly one crossing since last commit) | Only the mandatory BMC boundary transition occurred — no mid-cell transition | **0** |
+| 0 (exactly one crossing since last commit) | Only the mandatory BMC boundary transition occurred - no mid-cell transition | **0** |
 | 1 (two crossings) | Both boundary and mid-cell transitions occurred | **1** |
-| ≥2 (clamped to 1 by `std::min`) | Multiple transitions (noise or glitch) — treated as **1** |
+| ≥2 (clamped to 1 by `std::min`) | Multiple transitions (noise or glitch) - treated as **1** |
 
 **Why 1.8 × pulsesize and not exactly 2.0?** The factor 1.8 adds 10% tolerance below the expected bit period, accommodating small timing jitter from the LTC source clock without waiting for the full 2.0 × pulsesize.
 
@@ -435,7 +435,7 @@ Bit positions 64–79:  0 0 1 1 1 1 1 1 1 1 1 1 1 1 0 1
 
 In binary: `0011111111111101` (reading left to right, bit 64 first).
 
-The check is performed only when `syncpos < 0` (not yet synced) or `syncpos >= 80` (a full frame has elapsed since last sync — frame-boundary re-lock). Once a sync word is detected, `syncpos` is set to 0 and incremented each subsequent committed bit; when it reaches 80 the frame has completed and the check is repeated.
+The check is performed only when `syncpos < 0` (not yet synced) or `syncpos >= 80` (a full frame has elapsed since last sync - frame-boundary re-lock). Once a sync word is detected, `syncpos` is set to 0 and incremented each subsequent committed bit; when it reaches 80 the frame has completed and the check is repeated.
 
 ### 5.9 Time Field Extraction (BCD Decoding)
 
@@ -526,7 +526,7 @@ In `processTimeCode()`, `new_time != old_time` triggers a string format update a
 
 ---
 
-## 6. `processTimeCode()` — Per-Sample Wrapper
+## 6. `processTimeCode()` - Per-Sample Wrapper
 
 ```cpp
 inline void AutoSyncAudioProcessor::processTimeCode(
@@ -537,7 +537,7 @@ inline void AutoSyncAudioProcessor::processTimeCode(
 This private member function is the per-sample entry point called from `processBlock()`. It:
 
 1. Calls `handleTimecode(sample, channel, srate, slider)` to advance the decoder by one sample.
-2. Checks `channel.new_time != channel.old_time` — i.e., whether a new frame has been decoded.
+2. Checks `channel.new_time != channel.old_time` - i.e., whether a new frame has been decoded.
 3. If a new frame is available, formats it as a `HH:MM:SS:FF` string:
 
 ```cpp
@@ -553,7 +553,7 @@ The `srate` parameter defaults to `44100` (hardcoded). The plugin does not query
 
 ---
 
-## 7. `calc_delay()` — Timecode Difference Calculation
+## 7. `calc_delay()` - Timecode Difference Calculation
 
 ```cpp
 inline double calc_delay(tc_data& data1, tc_data& data2, int fps = 30)
@@ -589,7 +589,7 @@ Large delay values can arise from:
 
 A two-tier filter is applied:
 
-**Tier 1 — Early rejection (counter < 20):**
+**Tier 1 - Early rejection (counter < 20):**
 ```cpp
 if (delay_ms > 10000)
 {
@@ -603,9 +603,9 @@ if (delay_ms < -10000)
 }
 ```
 
-If `|delay_ms| > 10 seconds` and neither counter has exceeded 20, the measurement is rejected (returns 0) and the counter for the channel with the "leading" timecode is incremented. The 10-second threshold is chosen because no realistic synchronization problem should exceed it — if one channel shows a timecode more than 10 seconds ahead of the other, it is almost certainly a decoder error.
+If `|delay_ms| > 10 seconds` and neither counter has exceeded 20, the measurement is rejected (returns 0) and the counter for the channel with the "leading" timecode is incremented. The 10-second threshold is chosen because no realistic synchronization problem should exceed it - if one channel shows a timecode more than 10 seconds ahead of the other, it is almost certainly a decoder error.
 
-**Tier 2 — Acceptance after repeated confirmation:**
+**Tier 2 - Acceptance after repeated confirmation:**
 ```cpp
 if (data1.timecode_counter > 20 || data2.timecode_counter > 20
     && std::abs(delay_ms) > 10000)
@@ -638,7 +638,7 @@ This means if only `data1.timecode_counter > 20`, large delays are accepted rega
 
 The delay engine consists of two components: a constantly-updated historical ring buffer and the active delay FIFO.
 
-### 8.1 `handle_const_delay()` — Historical Lookahead Buffer
+### 8.1 `handle_const_delay()` - Historical Lookahead Buffer
 
 ```cpp
 inline void handle_const_delay(const float& sample, tc_data& data)
@@ -656,9 +656,9 @@ This function is called for **channel 1 only** on every sample, before any delay
 
 **Purpose:** When the delay is first activated, if the required delay is less than the amount of history in `const_buf`, the plugin can immediately output properly delayed audio by reading from this historical buffer rather than outputting silence. This avoids the silence artifact that would otherwise occur during the initial fill of the delay line.
 
-Only `chnl1` populates `const_buf` (see `processBlock()`). Channel 2 does not have a pre-filled history buffer — it uses the standard FIFO-based delay with initial silence.
+Only `chnl1` populates `const_buf` (see `processBlock()`). Channel 2 does not have a pre-filled history buffer - it uses the standard FIFO-based delay with initial silence.
 
-### 8.2 `delay()` — Sample-Level Delay Line
+### 8.2 `delay()` - Sample-Level Delay Line
 
 ```cpp
 inline void delay(float* writePtr, const int& index, tc_data& data)
@@ -666,7 +666,7 @@ inline void delay(float* writePtr, const int& index, tc_data& data)
 
 This function modifies `writePtr[index]` in-place. Three cases:
 
-**Case 1 — Serve from historical buffer:**
+**Case 1 - Serve from historical buffer:**
 ```cpp
 if (data.delay_size < data.const_buf.size())
 {
@@ -677,7 +677,7 @@ if (data.delay_size < data.const_buf.size())
 
 If the requested delay is smaller than the amount of history available, the output is taken directly from `const_buf` at offset `delay_size` from the end. This is only applicable to channel 1 (the only channel that populates `const_buf`). The index `const_buf.size() - delay_size` addresses the sample that entered the buffer exactly `delay_size` samples ago.
 
-**Case 2 — Filling the FIFO:**
+**Case 2 - Filling the FIFO:**
 ```cpp
 if (data.delay_buf.size() < data.delay_size)
 {
@@ -689,7 +689,7 @@ if (data.delay_buf.size() < data.delay_size)
 
 While the delay FIFO is not yet full, incoming samples are queued but the output is zero (silence). This is the initial fill phase.
 
-**Case 3 — Steady-state FIFO delay:**
+**Case 3 - Steady-state FIFO delay:**
 ```cpp
 else
 {
@@ -705,7 +705,7 @@ The new sample is appended to the back of the deque and the oldest sample is tak
 
 ---
 
-## 9. `processBlock()` — Main Audio Processing Loop
+## 9. `processBlock()` - Main Audio Processing Loop
 
 > **This section describes the v1.4 single-instance design and is significantly outdated.**
 > The current `processBlock()` implements a master-slave multi-track architecture with audio
@@ -863,7 +863,7 @@ When delay is inactive:
 
 ---
 
-## 10. GUI — `PluginEditor`
+## 10. GUI - `PluginEditor`
 
 > **This section describes the v1.4 UI and is outdated.** The UI was completely redesigned
 > into a dark-themed 4-card layout (header, signal, delay sync, diagnostics). The
@@ -963,7 +963,7 @@ delay_slider.onValueChange = [&]() {
 ```
 
 The slider provides a manual correction trim in the range **−250 to +250 ms**. Its value is stored in `audioProcessor.by_slider` and is applied in three places:
-- **Audio delay line:** `targetMs = d_ms + by_slider` (or `ab.estMs + by_slider` during fallback) — the slider shifts the actual applied audio delay
+- **Audio delay line:** `targetMs = d_ms + by_slider` (or `ab.estMs + by_slider` during fallback) - the slider shifts the actual applied audio delay
 - **MIDI output:** `|d_ms| + by_slider` in the 14-bit CC/pitch-wheel value
 - **DAW parameter:** `(|targetMs| + floor(by_slider)) / 4000`, normalised to 0–1
 
@@ -1027,24 +1027,24 @@ Key build-time settings:
 
 ## 13. Known Limitations and Design Notes
 
-### ~~Hardcoded Sample Rate~~ — FIXED
+### ~~Hardcoded Sample Rate~~ - FIXED
 
 ~~`processTimeCode()` defaults `srate` to `44100`.~~ The current implementation passes
 `currentSampleRate` (stored from `prepareToPlay()`) to all decoder calls. The plugin
 operates correctly at 44100, 48000, 96000 Hz and other DAW sample rates.
 
-### ~~Hardcoded Delay Sample Rate~~ — FIXED
+### ~~Hardcoded Delay Sample Rate~~ - FIXED
 
 ~~The delay engine hardcoded `44100` in `delay_size` computation.~~ The current code derives
 `delay_size` from `currentSampleRate`, so delay accuracy is maintained at any sample rate.
 
-### ~~`delay_frames` Global Variable~~ — FIXED
+### ~~`delay_frames` Global Variable~~ - FIXED
 
 ~~`delay_frames` was a file-scope `static int` causing cross-instance interference.~~
 Multi-instance operation is now supported via the master-slave IPC architecture
 (`SharedGroupMemory.h`). Per-instance state is correctly encapsulated.
 
-### Thread Safety of Display Strings — MITIGATED
+### Thread Safety of Display Strings - MITIGATED
 
 The audio thread writes diagnostic values (`d_ms`, `delay_ms`, etc.) and the GUI timer
 reads them. The mitigation is a "diagnostic copy" pattern: the audio thread writes to
@@ -1052,19 +1052,19 @@ reads them. The mitigation is a "diagnostic copy" pattern: the audio thread writ
 for torn reads. This is not a formally race-free design, but in practice the values are
 `double`/`float`/`int` and incoherent reads produce only momentarily garbled display text.
 
-### `delay_size` Tracking — IMPROVED
+### `delay_size` Tracking - IMPROVED
 
 The v1.4 freeze-on-first-activation behaviour has been replaced by a rebuild-on-shift
 mechanism (`rebuildThreshMs = 2 frames`): if `targetMs` drifts more than 2 frames from
 `activeDelayMs`, the delay FIFOs are cleared and recommitted from the new target.
 
-### `const_buf` Only for Channel 1 — UNCHANGED
+### `const_buf` Only for Channel 1 - UNCHANGED
 
 The pre-fill historical buffer (`handle_const_delay`) is still only fed from channel 1.
 Channel 2 delay uses the standard FIFO with an initial silence period. This asymmetry is
 acceptable because in master-slave mode the master track always passes through undelayed.
 
-### User Bits and Drop-Frame Flag Ignored — UNCHANGED
+### User Bits and Drop-Frame Flag Ignored - UNCHANGED
 
 The decoder reads only HH:MM:SS:FF. Drop-frame timecode (29.97 fps), user bits, and flag
 bits are not handled. The 29.97 fps rate is present in the `frates[]` table but is not

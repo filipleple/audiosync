@@ -12,9 +12,9 @@ seamlessly.
 
 The plugin runs in two roles that must be configured in the DAW session:
 
-- **Master** — placed on the reference LTC track. Decodes LTC, extracts an audio novelty
+- **Master** - placed on the reference LTC track. Decodes LTC, extracts an audio novelty
   curve, and writes both to shared memory. Does not delay its own output.
-- **Slave** — one instance per additional track. Reads master data from shared memory,
+- **Slave** - one instance per additional track. Reads master data from shared memory,
   decodes its own LTC, computes the inter-track delay, and applies it via a delay engine.
   Up to 8 slave instances are supported per group.
 
@@ -25,10 +25,10 @@ region used for communication.
 
 Make sure the following are installed:
 
-- [JUCE](https://juce.com/download/) — C++ framework for audio applications and plugins.
+- [JUCE](https://juce.com/download/) - C++ framework for audio applications and plugins.
 - [CMake](https://cmake.org/) 3.22+ and a C++17 compiler (Linux/macOS build).
 - [Visual Studio 2022](https://visualstudio.microsoft.com) (Windows build).
-- [Git](https://git-scm.com/) — version control.
+- [Git](https://git-scm.com/) - version control.
 
 Clone the repository:
 

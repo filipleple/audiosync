@@ -650,7 +650,7 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	// to 0 and takes ~20 s to reach windowFrames (MASTER_NOV_REF_SIZE).  The
 	// main framesFilled guard below would otherwise block the estimator for
 	// that whole period, leaving audFallback.valid=false and the fuser
-	// outputting Source::None — while the anchor and α-β tracker still hold
+	// outputting Source::None - while the anchor and α-β tracker still hold
 	// the true offset.  Worse, by the time the ring refills the anchor can
 	// age past ANCHOR_MAX_AGE_MS for long fades, forcing wide-mode NCC which
 	// cannot reach offsets beyond ±lagRange·hopMs (±2 s) and locks onto a
@@ -685,7 +685,7 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	// the window.  Pre-shift masterNoveltyRef by K_eff so the NCC peak
 	// lands near relLag=0; search only ±NARROW_HALF hops (±300 ms).
 	//
-	// Wide (fallback): no valid anchor — search ±lagRange hops (±2 s).
+	// Wide (fallback): no valid anchor - search ±lagRange hops (±2 s).
 	//
 	// Staleness: master writes novelty ~every 100 ms; slave reads it on
 	// its own independent 100 ms timer → up to 200 ms offset.  Corrected
@@ -697,8 +697,8 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	// shifting masterNoveltyRef forward by timeDeltaHops when building
 	// linBuf2, so master and slave frames align to the same DAW time.
 	//
-	// Both sides must use a shared clock — the DAW playhead (currentDawSample)
-	// — not each instance's self-maintained totalSamplesProcessed, which
+	// Both sides must use a shared clock - the DAW playhead (currentDawSample)
+	// - not each instance's self-maintained totalSamplesProcessed, which
 	// starts at 0 on prepareToPlay and so differs by the load-time delta
 	// between master and slave processes.  That delta is typically 10–15
 	// hops and produces a systematic ±100–150 ms bias in the anchored NCC
@@ -845,7 +845,7 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	}
 
 	// ------------------------------------------------------------------
-	// NCC helper — computes correlation at one lag value.
+	// NCC helper - computes correlation at one lag value.
 	// linBuf1/linBuf2, m1/m2, s1/s2, nccN captured by reference.
 	// ------------------------------------------------------------------
 	auto nccAt = [&](int lag) -> double
@@ -895,7 +895,7 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	}
 
 	// Distance-gated runner-up.  The original single-pass tracked any second
-	// peak, including lags 1–2 hops either side of the best — which is just
+	// peak, including lags 1–2 hops either side of the best - which is just
 	// the curvature of the same peak and artificially deflates prominence.
 	// Restrict the runner-up to lags ≥ MIN_PEAK_DIST hops from the best so
 	// prominence measures competition from genuinely distinct peaks only.
@@ -911,7 +911,7 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	}
 
 	// ------------------------------------------------------------------
-	// Sub-hop parabola interpolation — sharpens accuracy from ±10 ms to
+	// Sub-hop parabola interpolation - sharpens accuracy from ±10 ms to
 	// roughly ±2 ms at no extra window cost.
 	// Only applied when the peak is not at the search boundary.
 	// ------------------------------------------------------------------
@@ -936,7 +936,7 @@ void AutoSyncAudioProcessor::estimateAudioFallbackOffset()
 	// cases:
 	//   absoluteLag = relLag − anchorHops
 	//
-	// Wide: no shift — relative == absolute.
+	// Wide: no shift - relative == absolute.
 	//
 	// Sign convention: absoluteLag > 0 → slave is early → deltaAudMs < 0.
 	//                  absoluteLag < 0 → slave is late  → deltaAudMs > 0.
@@ -1008,7 +1008,7 @@ void AutoSyncAudioProcessor::fuseLtcAndAudioFallback()
 
 	if (ltcOk)
 	{
-		// Only refresh the anchor when d_ms is stable — no recent jump candidate.
+		// Only refresh the anchor when d_ms is stable - no recent jump candidate.
 		// A value that slipped through the confirm count must not become the NCC seed.
 		if (!d_ms_recently_jumped)
 		{
@@ -1046,7 +1046,7 @@ void AutoSyncAudioProcessor::fuseLtcAndAudioFallback()
 			// A coherent anchored NCC hit proves the anchor is still tracking
 			// the true offset, so refresh its timestamp.  This lets us hold
 			// onto a large LTC-captured offset indefinitely as long as audio
-			// correlation stays healthy — the 30 s anchor age limit only runs
+			// correlation stays healthy - the 30 s anchor age limit only runs
 			// down during silence or broken audio, not during normal speech.
 			if (audFallback.lastEstimateAnchored)
 				anchorTimestampMs = juce::Time::currentTimeMillis();
@@ -1061,7 +1061,7 @@ void AutoSyncAudioProcessor::fuseLtcAndAudioFallback()
 	}
 
 	// ------------------------------------------------------------------
-	// Alpha-beta tracker — updated every NCC refresh cycle (~200 ms).
+	// Alpha-beta tracker - updated every NCC refresh cycle (~200 ms).
 	//
 	// While LTC is healthy the tracker is kept synchronised to d_ms so it
 	// is ready to coast the moment LTC drops.  When the audio fallback is
@@ -1173,7 +1173,7 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 	// =========================================================================
 	// MASTER PATH
 	// Decode LTC from the designated channel, extract novelty, write SM.
-	// Audio passes through unchanged — master is the reference, no delay.
+	// Audio passes through unchanged - master is the reference, no delay.
 	// =========================================================================
 	if (pluginMode == PluginMode::Master)
 	{
@@ -1195,7 +1195,7 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 			pushAudioAnalysisSample(ltcSample, sceneSample);
 
 			// Update diagnostics + write SM every ~0.1 s.
-			// Counter is per-sample (matching the slave path) — do NOT move this outside
+			// Counter is per-sample (matching the slave path) - do NOT move this outside
 			// the loop; per-block counting would require thousands of blocks to fire.
 			if (++dt_sample_counter >= (int)(currentSampleRate * 0.1))
 			{
@@ -1400,7 +1400,7 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 				// is unlocked (re-acquiring after a sustained reject burst, or
 				// having latched briefly onto speech-derived BCD-valid garbage
 				// during an LTC fade), the tc_ref_ms / tc_self_ms pair can't be
-				// trusted — hold the last committed d_ms instead.
+				// trusted - hold the last committed d_ms instead.
 				const bool bothLocked = (master_locked_local != 0) && chnl1_in.locked;
 				if (master_valid_local && master_ltc_state >= 1 && bothLocked && tc_ref_ms_local != 0)
 				{
