@@ -866,9 +866,8 @@ When delay is inactive:
 ## 10. GUI — `PluginEditor`
 
 > **This section describes the v1.4 UI and is outdated.** The UI was completely redesigned
-> into a dark-themed 4-card layout (header, signal, delay sync, diagnostics). See
-> `ui_redesign.md` for the new layout specification. The absolute-pixel layout described
-> below no longer exists in `PluginEditor.cpp`.
+> into a dark-themed 4-card layout (header, signal, delay sync, diagnostics). The
+> absolute-pixel layout described below no longer exists in `PluginEditor.cpp`.
 
 `AutoSyncAudioProcessorEditor` extends `juce::AudioProcessorEditor` and `juce::Timer`. The editor window is fixed at **400 × 300 pixels**.
 
@@ -963,11 +962,12 @@ delay_slider.onValueChange = [&]() {
 };
 ```
 
-The slider provides a manual trim in the range **−1500 to +1500 ms**. Its value is stored in `audioProcessor.by_slider` and is added to the absolute `d_ms` measurement:
-- In the MIDI output value calculation: `|d_ms| + by_slider`
-- In the `myParameter` modulation value: `(|d_ms| + floor(by_slider)) / 4000`
+The slider provides a manual correction trim in the range **−250 to +250 ms**. Its value is stored in `audioProcessor.by_slider` and is applied in three places:
+- **Audio delay line:** `targetMs = d_ms + by_slider` (or `ab.estMs + by_slider` during fallback) — the slider shifts the actual applied audio delay
+- **MIDI output:** `|d_ms| + by_slider` in the 14-bit CC/pitch-wheel value
+- **DAW parameter:** `(|targetMs| + floor(by_slider)) / 4000`, normalised to 0–1
 
-The slider does **not** affect the delay line length applied to audio (which is derived solely from `d_ms`). It is a MIDI/modulation output offset only.
+The `by_slider` offset is added *after* the LTC/NCC estimation pipeline, so the anchor, NCC search window, and alpha-beta tracker all operate in raw-delay space. The slider is a post-estimation trim only and does not disturb the fallback algorithm's internal state.
 
 ### 10.5 Delay Activate Button
 
