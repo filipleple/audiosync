@@ -146,6 +146,7 @@ public:
 
     juce::TextButton delayToggle;
     juce::Slider     manualSlider;
+    juce::TextButton resetButton;
 
 private:
     juce::Label titleLabel;

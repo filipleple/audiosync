@@ -1260,9 +1260,9 @@ void AutoSyncAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce
 		// its last velocity estimate rather than snapping to zero.
 		double targetMs;
 		if (masterValid)
-			targetMs = d_ms;
+			targetMs = d_ms + by_slider;
 		else if (ab.initialized)
-			targetMs = ab.estMs;   // smoothed + rate-limited; coasts on velocity when abstaining
+			targetMs = ab.estMs + by_slider;   // smoothed + rate-limited; coasts on velocity when abstaining
 		else
 			targetMs = 0.0;
 
@@ -1526,7 +1526,7 @@ void AutoSyncAudioProcessor::setStateInformation(const void* data, int sizeInByt
 	slotLabel    = xml->getStringAttribute("label", "");
 	fps          = xml->getIntAttribute("fps", 30) == 25 ? 25 : 30;
 	active_delay = xml->getIntAttribute("active_delay", 0) != 0;
-	by_slider    = xml->getDoubleAttribute("by_slider", 0.0);
+	by_slider    = juce::jlimit(-250.0, 250.0, xml->getDoubleAttribute("by_slider", 0.0));
 	// shm will be (re-)opened on the next prepareToPlay call.
 }
 

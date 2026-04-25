@@ -313,9 +313,12 @@ DelaySyncCard::DelaySyncCard()
 
     delayToggle.setButtonText("OFF");
 
-    manualSlider.setRange(-1500.0, 1500.0);
+    manualSlider.setRange(-250.0, 250.0);
     manualSlider.setNumDecimalPlacesToDisplay(0);
     manualSlider.setTextValueSuffix(" ms");
+
+    resetButton.setButtonText("0");
+    resetButton.setTooltip("Reset manual correction to zero");
 
     addAndMakeVisible(titleLabel);
     addAndMakeVisible(delayMsLabel);
@@ -329,6 +332,7 @@ DelaySyncCard::DelaySyncCard()
     addAndMakeVisible(sliderLabel);
     addAndMakeVisible(sliderValue);
     addAndMakeVisible(manualSlider);
+    addAndMakeVisible(resetButton);
 }
 
 void DelaySyncCard::paint(juce::Graphics& g)
@@ -383,7 +387,10 @@ void DelaySyncCard::resized()
         sliderValue.setBounds(labelRow.removeFromRight(80));
         sliderLabel.setBounds(labelRow);
         inner.removeFromTop(GAP_SMALL);
-        manualSlider.setBounds(inner.removeFromTop(24));
+        auto sliderRow = inner.removeFromTop(24);
+        resetButton.setBounds(sliderRow.removeFromRight(28));
+        sliderRow.removeFromRight(4);
+        manualSlider.setBounds(sliderRow);
     }
 }
 
@@ -648,6 +655,10 @@ AutoSyncAudioProcessorEditor::AutoSyncAudioProcessorEditor(AutoSyncAudioProcesso
         const double v = delayCard.manualSlider.getValue();
         audioProcessor.by_slider = v;
         delayCard.setManualValue(juce::String((int)v) + " ms");
+    };
+    delayCard.resetButton.onClick = [&]()
+    {
+        delayCard.manualSlider.setValue(0.0, juce::sendNotification);
     };
 
     // Config: Mode
