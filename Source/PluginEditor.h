@@ -1,7 +1,7 @@
 /*
   ==============================================================================
     PluginEditor.h  —  UI redesign, styling phase
-    Design reference: 1500 × 900 px (scales proportionally)
+    Design reference: 900 × 620 px (scales proportionally)
   ==============================================================================
 */
 
@@ -13,12 +13,12 @@
 // ============================================================
 // Spacing constants
 // ============================================================
-constexpr int PAD         = 24;
-constexpr int GAP_SMALL   =  6;
-constexpr int GAP_MED     = 12;
-constexpr int GAP_LARGE   = 16;
-constexpr int GAP_SECTION = 20;
-constexpr int GAP_H       = 24;
+constexpr int PAD         = 12;
+constexpr int GAP_SMALL   =  4;
+constexpr int GAP_MED     =  8;
+constexpr int GAP_LARGE   = 10;
+constexpr int GAP_SECTION = 10;
+constexpr int GAP_H       = 12;
 
 // ============================================================
 // Theme — colours and typography (defined in .cpp)
@@ -48,10 +48,10 @@ namespace Theme
     constexpr float badgeRadius = 10.0f;   // true pill when badge height ≈ 20px
 
     // Font sizes
-    constexpr float fontTimecode = 44.0f;  // dominant primary value
-    constexpr float fontValue    = 14.0f;  // metric values in right card
-    constexpr float fontTitle    = 14.0f;  // card / section titles
-    constexpr float fontLabel    = 12.0f;  // field labels
+    constexpr float fontTimecode = 26.0f;  // dominant primary value
+    constexpr float fontValue    = 13.0f;  // metric values in right card
+    constexpr float fontTitle    = 13.0f;  // card / section titles
+    constexpr float fontLabel    = 11.0f;  // field labels
     constexpr float fontMeta     = 11.0f;  // sub-text, diagnostics content
     constexpr float fontBadge    = 11.0f;  // badge labels
 }

@@ -223,9 +223,9 @@ void SignalCard::paint(juce::Graphics& g)
 
 void SignalCard::resized()
 {
-    auto inner = getLocalBounds().reduced(32);
+    auto inner = getLocalBounds().reduced(14);
 
-    const int tcHeight = int(inner.getHeight() * 0.45f);
+    const int tcHeight = int(inner.getHeight() * 0.50f);
     auto tcArea = inner.removeFromTop(tcHeight);
 
     inner.removeFromTop(GAP_LARGE);
@@ -237,7 +237,7 @@ void SignalCard::resized()
         auto fpsArea = inner;
         fpsRowLabel.setBounds(fpsArea.removeFromTop(20));
         fpsArea.removeFromTop(GAP_SMALL);
-        fpsBox.setBounds(fpsArea.removeFromLeft(220).removeFromTop(28));
+        fpsBox.setBounds(fpsArea.removeFromLeft(160).removeFromTop(26));
     }
 
     // TimecodeRow split 50/50
@@ -353,10 +353,10 @@ void DelaySyncCard::resized()
 {
     auto inner = getLocalBounds().reduced(24);
 
-    titleLabel.setBounds(inner.removeFromTop(28));
+    titleLabel.setBounds(inner.removeFromTop(24));
     inner.removeFromTop(GAP_LARGE);
 
-    constexpr int ROW_H  = 32;
+    constexpr int ROW_H  = 24;
     constexpr int VALUE_W = 100;
 
     auto layoutMetricRow = [&](juce::Label& lbl, juce::Label& val)
@@ -364,7 +364,7 @@ void DelaySyncCard::resized()
         auto row = inner.removeFromTop(ROW_H);
         val.setBounds(row.removeFromRight(VALUE_W));
         lbl.setBounds(row);
-        inner.removeFromTop(GAP_MED);
+        inner.removeFromTop(GAP_SMALL);
     };
 
     layoutMetricRow(delayMsLabel,     delayMsValue);
@@ -375,20 +375,20 @@ void DelaySyncCard::resized()
 
     // Toggle row
     {
-        auto row = inner.removeFromTop(28);
-        delayToggle.setBounds(row.removeFromRight(80));
+        auto row = inner.removeFromTop(22);
+        delayToggle.setBounds(row.removeFromRight(70));
         toggleLabel.setBounds(row);
     }
     inner.removeFromTop(GAP_LARGE);
 
     // Slider row
     {
-        auto labelRow = inner.removeFromTop(20);
-        sliderValue.setBounds(labelRow.removeFromRight(80));
+        auto labelRow = inner.removeFromTop(16);
+        sliderValue.setBounds(labelRow.removeFromRight(70));
         sliderLabel.setBounds(labelRow);
         inner.removeFromTop(GAP_SMALL);
-        auto sliderRow = inner.removeFromTop(24);
-        resetButton.setBounds(sliderRow.removeFromRight(28));
+        auto sliderRow = inner.removeFromTop(20);
+        resetButton.setBounds(sliderRow.removeFromRight(24));
         sliderRow.removeFromRight(4);
         manualSlider.setBounds(sliderRow);
     }
@@ -468,11 +468,11 @@ void DiagnosticsCard::paint(juce::Graphics& g)
 
 void DiagnosticsCard::resized()
 {
-    auto inner = getLocalBounds().reduced(16);
+    auto inner = getLocalBounds().reduced(10);
 
     // Summary row
     {
-        auto row = inner.removeFromTop(28);
+        auto row = inner.removeFromTop(22);
         inner.removeFromTop(GAP_SMALL);
         summaryDivider = inner.removeFromTop(1);
         inner.removeFromTop(GAP_MED);
@@ -485,7 +485,7 @@ void DiagnosticsCard::resized()
     }
 
     // Footer
-    footerLabel.setBounds(inner.removeFromBottom(24));
+    footerLabel.setBounds(inner.removeFromBottom(18));
     inner.removeFromBottom(GAP_MED);
 
     // Store column separator geometry (3 lines between 4 equal columns)
@@ -569,7 +569,7 @@ void ConfigSection::resized()
 {
     auto area = getLocalBounds();
 
-    titleLabel.setBounds(area.removeFromTop(28));
+    titleLabel.setBounds(area.removeFromTop(22));
     area.removeFromTop(GAP_MED);
 
     // Row 1: Mode (300 px fixed) | gap | Group (flex)
@@ -699,7 +699,7 @@ AutoSyncAudioProcessorEditor::AutoSyncAudioProcessorEditor(AutoSyncAudioProcesso
         audioProcessor.slotLabel = configSection.labelEditor.getText();
     };
 
-    setSize(1500, 900);
+    setSize(900, 620);
     startTimer(1);
 }
 
@@ -723,14 +723,14 @@ void AutoSyncAudioProcessorEditor::resized()
     auto area = getLocalBounds().reduced(PAD);
     const int totalH = getHeight();
 
-    header.setBounds(area.removeFromTop(44));
+    header.setBounds(area.removeFromTop(34));
     area.removeFromTop(GAP_SECTION);
 
-    const int mainH = int(totalH * 0.42f);
+    const int mainH = int(totalH * 0.44f);
     auto mainRow = area.removeFromTop(mainH);
     area.removeFromTop(GAP_SECTION);
 
-    const int diagH = int(totalH * 0.18f);
+    const int diagH = int(totalH * 0.20f);
     diagCard.setBounds(area.removeFromTop(diagH));
     area.removeFromTop(GAP_SECTION);
 
