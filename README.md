@@ -23,6 +23,16 @@ region used for communication.
 
 ## Installation
 
+Navigate to the latest [release](https://github.com/filipleple/audiosync/releases)
+and download a package compatible with your OS.
+
+Extract the package into your DAW's VST3 scan directory. Typically `~/.vst3` for
+Linux, and `C:\Common Files\VST3` on Windows.
+
+Alternatively, you can build the plugin yourself, as per instructions below.
+
+## Building
+
 Make sure the following are installed:
 
 - [JUCE](https://juce.com/download/) - C++ framework for audio applications and plugins.
