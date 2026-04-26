@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2024 Filip Lewinski <filip.lewinski@3mdeb.com>
 """
 Generate a mixed audio + LTC test track from tedtalk_full.mp3.
 

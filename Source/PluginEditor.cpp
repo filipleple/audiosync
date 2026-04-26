@@ -1,8 +1,5 @@
-/*
-  ==============================================================================
-    PluginEditor.cpp  -  UI redesign, styling phase
-  ==============================================================================
-*/
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2024 Filip Lewinski <filip.lewinski@3mdeb.com>
 
 #include "PluginProcessor.h"
 #include "PluginEditor.h"

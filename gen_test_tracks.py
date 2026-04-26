@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2024 Filip Lewinski <filip.lewinski@3mdeb.com>
 """
 Generate synthetic SMPTE LTC test audio tracks at varying quality levels.
 

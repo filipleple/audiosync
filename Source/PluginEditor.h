@@ -1,9 +1,5 @@
-/*
-  ==============================================================================
-    PluginEditor.h  -  UI redesign, styling phase
-    Design reference: 900 × 620 px (scales proportionally)
-  ==============================================================================
-*/
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2024 Filip Lewinski <filip.lewinski@3mdeb.com>
 
 #pragma once
 

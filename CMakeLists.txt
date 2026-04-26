@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2024 Filip Lewinski <filip.lewinski@3mdeb.com>
+
 cmake_minimum_required(VERSION 3.22)
 project(AudioSyncPlugin VERSION 1.0.0)
 
