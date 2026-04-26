@@ -43,7 +43,7 @@ Make sure the following are installed:
 Clone the repository:
 
 ```bash
-git clone https://git.pg.edu.pl/p1334942/automatic-synchronization-of-sound-with-360-camera
+git clone https://github.com/filipleple/audiosync
 ```
 
 ### Build (Linux / macOS)
