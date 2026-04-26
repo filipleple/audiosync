@@ -1,5 +1,11 @@
 # Technical Documentation - "AudioSync" JUCE VST Plugin
 
+> **⚠ SUPERSEDED** — This document describes the original stereo two-channel PoC
+> architecture (one plugin instance, two LTC channels on a single stereo track).
+> The production architecture is the master-slave multi-instance system documented in
+> `master-slave-architecture.md`.  This file is retained for historical reference only.
+> Do not cite this document in new design notes or the writeup.
+
 **Version:** 1.4 (UI label), plugin version string 1.0.0
 **Format:** VST3, AU, Standalone
 **Purpose:** Decode SMPTE LTC timecodes from two stereo audio channels, compute their temporal difference, apply compensating audio delay to the leading channel, and transmit the measured offset via 14-bit MIDI CC.

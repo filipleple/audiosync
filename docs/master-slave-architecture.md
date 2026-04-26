@@ -69,9 +69,12 @@ All inter-plugin data exchange uses **OS-level named shared memory**:
 - **Linux / macOS:** `shm_open` + `mmap` (POSIX, `librt`)
 - **Windows:** `CreateFileMapping` + `MapViewOfFile`
 
-The shared memory region is named `"AUTOSYNC_{groupName}"`, where `groupName` is a short
+The shared memory region is named `"AUTOSYNC2_{groupName}"`, where `groupName` is a short
 alphanumeric string (max 16 chars) configured identically in the Master and all Slaves of a
-session. Different sessions on the same machine use different group names.
+session. Different sessions on the same machine use different group names. The `2` suffix is a
+layout-version guard: it prevents a new plugin build from attaching to a segment written by an
+older build whose `MasterSlot` had a different field layout (the nov_ref array was smaller in
+earlier versions).
 
 **Why shared memory instead of alternatives:**
 
@@ -90,55 +93,62 @@ no audio buffer transfer is ever required.
 ## 4. Shared Memory Layout
 
 ```cpp
+// Number of hops in the master novelty ring (10 ms/hop → 20 s of history).
+// Must stay in sync with AudioFallbackState::windowFrames (set in init()).
+static constexpr int MASTER_NOV_REF_SIZE = 2000;
+
 // Written by master; read by all slaves.
 struct MasterSlot
 {
-    std::atomic<uint32_t> writeSeq{0};  // seqcount: odd = write in progress
+    std::atomic<uint32_t> writeSeq { 0 };  // seqcount: odd = write in progress
 
-    int64_t  tc_ref_ms          = 0;  // reference timecode in milliseconds
-    int64_t  ref_decode_sample  = 0;  // abs stream sample pos of last master LTC decode
-    float    Q_ref       = 0.0f;
-    uint8_t  ltc_state   = 0;           // 0=FAIL, 1=SUSPECT, 2=VALID
-    bool     valid       = false;       // false until master has produced ≥1 window
+    bool    valid           = false;   // false until master has produced ≥1 full window
+    uint8_t ltc_state       = 0;       // 0=FAIL, 1=SUSPECT, 2=VALID
+    uint8_t locked          = 0;       // temporal-coherence gate state: 0=unlocked, 1=locked
 
-    float    nov_ref[200]{};            // reference novelty curve (800 bytes)
-    int      nov_writePos    = 0;       // circular buffer write position
-    int      nov_framesFilled = 0;      // how many frames are populated
+    int64_t tc_ref_ms         = 0;     // reference timecode in milliseconds
+    int64_t ref_decode_sample = 0;     // abs stream sample pos of last master LTC decode
+    int64_t nov_anchor_sample = 0;     // DAW-timeline sample pos when novelty was last written;
+                                       // used by slaves to correct for async SM read latency
 
-    uint8_t  _pad[3]{};                 // alignment padding
+    float   Q_ref             = 0.0f;
+
+    int     nov_writePos      = 0;     // circular buffer head (next write index)
+    int     nov_framesFilled  = 0;     // frames populated so far, saturates at MASTER_NOV_REF_SIZE
+
+    float   nov_ref[MASTER_NOV_REF_SIZE] = {};  // reference log-energy novelty ring (~8 KB)
 };
-// sizeof(MasterSlot) ≈ 848 bytes
+// sizeof(MasterSlot) ≈ 8100 bytes (dominated by nov_ref[2000] × 4 bytes = 8 KB)
 
 // Written by one slave; read by master (for dashboard).
 struct SlaveSlot
 {
-    std::atomic<uint32_t> writeSeq{0};
+    std::atomic<uint32_t> writeSeq { 0 };
 
-    bool     connected   = false;       // true while slot is actively updated
-    char     label[32]{};              // user-assigned label (e.g. "field-rec-A")
+    bool    connected       = false;   // true while the slot is actively being written
+    bool    holding         = false;   // delay frozen because master data is stale
+    uint8_t ltc_state       = 0;
+    uint8_t fusion_src      = 0;       // 0=None, 1=LTC, 2=Audio
 
-    int64_t  tc_self_ms  = 0;
-    float    Q_self      = 0.0f;
-    uint8_t  ltc_state   = 0;
-    float    estimated_fps = 0.0f;
+    char    label[32]       = {};      // user-assigned label, null-terminated
 
-    double   dt_ltc_ms   = 0.0;        // Δt from LTC path
-    double   dt_aud_ms   = 0.0;        // Δt from audio NCC path
-    double   conf_aud    = 0.0;
-    uint8_t  fusion_src  = 0;          // 0=None, 1=LTC, 2=Audio
-    double   active_delay_ms = 0.0;    // delay currently applied
-    bool     holding     = false;      // true if delay is held due to lost master
+    int64_t tc_self_ms      = 0;
+    float   Q_self          = 0.0f;
+    float   estimated_fps   = 0.0f;
 
-    uint8_t  _pad[6]{};
+    double  dt_ltc_ms       = 0.0;    // Δt from LTC path
+    double  dt_aud_ms       = 0.0;    // Δt from audio NCC path
+    double  conf_aud        = 0.0;
+    double  active_delay_ms = 0.0;    // delay currently applied
 };
-// sizeof(SlaveSlot) ≈ 120 bytes
+// sizeof(SlaveSlot) ≈ 112 bytes
 
 struct SharedGroup
 {
     MasterSlot master;
     SlaveSlot  slaves[8];
 };
-// sizeof(SharedGroup) ≈ 1808 bytes - well within one OS page
+// sizeof(SharedGroup) ≈ 9000 bytes (well within one OS page of 4096 × 3)
 ```
 
 The shared memory region is exactly `sizeof(SharedGroup)` bytes, allocated once by the first
@@ -193,7 +203,7 @@ At each LTC quality window boundary (~500 ms):
 At each NCC refresh interval (~200 ms):
 - Write to `MasterSlot` via seqcount:
   - `tc_ref_ms`, `ref_decode_sample`, `Q_ref`, `ltc_state`, `valid`
-  - Full `nov_ref[200]` copy + `nov_writePos`, `nov_framesFilled`
+  - Full `nov_ref[2000]` copy + `nov_writePos`, `nov_framesFilled`, `nov_anchor_sample`
 
 ### GUI thread (timer, ~100 ms)
 - Read all 8 `SlaveSlot` entries from shared memory.
@@ -226,20 +236,28 @@ At each novelty hop boundary (~10 ms):
 At each LTC quality window boundary (~500 ms):
 - Call `computeAndResetWindow()` → updates `Q_self`, `ltc_state_self`.
 
-At each NCC refresh interval (~200 ms):
+At each diagnostic interval (~100 ms):
 - Read `MasterSlot` from shared memory (seqcount read).
-- If master is valid and has `nov_framesFilled >= windowFrames`:
-  - Run `NCC(nov_ref, nov_self)` → `dt_aud_ms`, `conf_aud`.
-- Compute `dt_ltc_ms` using the sample-accurate formula (if both have valid LTC):
-  ```
-  dt_ltc_ms = (ref_decode_sample_slave − ref_decode_sample_master) / sr × 1000
-              − (tc_self_ms − tc_ref_ms)
-  ```
-  The subtracted term cancels LTC frame-boundary quantisation (±1 frame = ±40 ms at 25 fps),
-  giving sub-millisecond precision regardless of when the two 0.1 s update ticks fire.
-  Falls back to `tc_self_ms − tc_ref_ms` until both sides have decoded at least one frame.
-- Run fusion policy (§8) → `active_delay_ms`, `fusion_src`.
-- Update delay engine with `active_delay_ms`.
+- If master is valid, `master.ltc_state >= SUSPECT`, and **both decoders have the
+  temporal-coherence gate engaged** (`master.locked && slave_chnl.locked`):
+  - Compute `dt_ltc_ms` using the sample-accurate formula:
+    ```
+    dt_ltc_ms = (ref_decode_sample_slave − ref_decode_sample_master) / sr × 1000
+                − (tc_self_ms − tc_ref_ms)
+    ```
+    The subtracted term cancels LTC frame-boundary quantisation (±1 frame = ±40 ms at 25 fps),
+    giving sub-millisecond precision regardless of when the two 0.1 s update ticks fire.
+    Falls back to `tc_ref_ms − tc_self_ms` until either side hasn't decoded a frame yet.
+  - The `bothLocked` gate prevents garbage frames (speech-derived BCD-valid collisions that
+    passed through the coherence gate before re-locking) from corrupting `d_ms` during
+    LTC fade or recovery.
+- Novelty ring from SM is linearised into `masterNoveltyRef` when
+  `nov_framesFilled >= WIDE_WIN` (4 s minimum before NCC can run).
+
+At each NCC refresh interval (~200 ms, triggered from inside `pushAudioAnalysisSample`):
+- If `activityGate` is open: run `estimateAudioFallbackOffset()` → `dt_aud_ms`, `conf_aud`.
+- Run `fuseLtcAndAudioFallback()` → `active_delay_ms`, `fusion_src`.
+- Update α-β tracker and delay engine with `active_delay_ms`.
 - Write own status to `SlaveSlot[slotId-1]` via seqcount.
 
 ### NCC runs locally in the slave
@@ -457,8 +475,8 @@ reference-counts the mapping; the last `close()` unmaps but does not destroy the
 persists until the OS is rebooted or until explicitly unlinked). This is intentional: if the
 master crashes and restarts, it re-opens the same segment without losing slave registrations.
 
-On Linux/macOS the segment is created under `/dev/shm/AUTOSYNC_{groupName}`.  
-On Windows the segment name is `Global\AUTOSYNC_{groupName}`.
+On Linux/macOS the segment is created under `/dev/shm/AUTOSYNC2_{groupName}`.  
+On Windows the segment name is `Local\AUTOSYNC2_{groupName}`.
 
 ### CMake changes
 

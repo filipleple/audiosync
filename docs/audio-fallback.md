@@ -143,51 +143,63 @@ float e1 = audFallback.energyAcc1 / (float)audFallback.hopSamples;
 
 Both channels are accumulated in parallel, independently.
 
-### 3.2 Novelty as Positive Energy Flux
+### 3.2 Novelty as Positive Log-Energy Flux
 
-The novelty function retains only positive frame-to-frame energy increases:
+The novelty function retains only positive frame-to-frame increases in log-energy:
 
 ```
-nov[n] = max(0,  E[n] - E[n-1])
+nov[n] = max(0, log(E[n] + ε) - log(E[n-1] + ε))
 ```
 
-This is a half-wave rectified first difference of the short-time energy. It is non-zero only
-when the signal becomes louder - i.e., at onsets, transient attacks, and the rising edges of
-speech phonemes.
+where ε = 1e-10 prevents log(0). This is a half-wave rectified first difference of the
+log short-time energy, non-zero only when the signal becomes louder (onsets, transient attacks,
+rising edges of speech phonemes).
 
 ```cpp
-float nov1 = std::max(0.0f, e1 - audFallback.prevEnergy1);
+static constexpr float NOV_EPS = 1e-10f;
+float nov1 = std::max(0.0f,
+    std::log(e1 + NOV_EPS) - std::log(audFallback.prevEnergy1 + NOV_EPS));
 ```
 
-### 3.3 Why Novelty Rather Than Raw Energy
+### 3.3 Why Log-Energy Flux Rather Than Linear Flux
 
-**Raw energy** is correlated between channels but is dominated by the spectral envelope of the
-dominant signal. For mixed LTC + programme audio, the LTC component contributes a near-constant
-energy term (square wave at constant amplitude → constant power). This constant offset
-contributes zero variance to the cross-correlation and would not bias the lag estimate, but it
-reduces the effective dynamic range available for speech-driven variation.
-
-More importantly, cross-correlating raw energy over a 2-second window on a 25 fps signal would
-find strong spurious peaks at every multiple of the LTC frame period (40 ms at 25 fps), because
-the LTC bit structure repeats periodically. The NCC would be unable to distinguish the true lag
-from `true_lag ± k × 40 ms`.
-
-**Novelty** breaks this periodicity. LTC has nearly constant power - its novelty is near zero.
-Programme audio has irregular onsets - its novelty is sparse and aperiodic. The novelty function
-therefore acts as a soft detector of acoustic events, producing a sparse signal whose
-cross-correlation is dominated by shared acoustic content rather than the LTC waveform structure.
-
-Mathematically, for a signal that is the sum of a constant-power component c(t) and a programme
-component p(t):
+**Gain invariance** is the primary motivation for log-scale. The master and slave microphones
+are rarely at matched recording levels — a proportional gain difference of 2× on linear flux
+would shift the NCC peak because the same transient produces proportionally different magnitudes
+on each side. On log scale, a gain difference of A is an additive constant:
 
 ```
-E[n] = P[n] + C    where C = constant LTC power contribution
-nov[n] = max(0, E[n] - E[n-1]) = max(0, P[n] - P[n-1])
+log(A·E[n] + ε) - log(A·E[n-1] + ε) ≈ log(E[n]) - log(E[n-1])  (for E >> ε/A)
 ```
 
-The constant C cancels in the difference. The novelty is driven entirely by P.
+So log-flux compares relative energy changes, not absolute values, making the NCC peak
+position independent of recording gain.
 
-### 3.4 Circular Buffer Organisation
+**Carrier suppression** is a secondary benefit. LTC has nearly constant power, so its
+log-energy novelty is near zero. Programme audio has irregular onsets — its novelty is sparse
+and aperiodic. Cross-correlating raw energy would find spurious peaks at every multiple of the
+LTC frame period (40 ms at 25 fps) because the LTC bit structure repeats periodically.
+Log-energy novelty breaks this periodicity just as linear novelty would, while also providing
+the gain-invariance benefit above.
+
+### 3.4 Stereo-LTC Guard on Channel 2 Novelty
+
+In the slave instance, `novelty1` tracks the LTC/scene-audio channel and is used for the NCC
+against the master reference. `novelty2` nominally tracks the opposite channel (scene audio).
+However, when a slave's two input channels are both LTC (stereo routing), carrier energy
+entering `novelty2` would corrupt the NCC.
+
+The code suppresses `nov2` proportionally to the slave's own LTC quality:
+
+```cpp
+nov2 *= (1.0f - std::min(1.0f, chnl1_in.Q_LTC / 0.5f));
+```
+
+At `Q_LTC = 0.5` (FAIL/SUSPECT boundary) `nov2` is fully zeroed. As LTC fades and `Q_LTC`
+drops, the gate opens automatically, allowing speech onsets on the scene-audio channel to
+accumulate in the novelty buffer cleanly before the NCC fallback activates.
+
+### 3.5 Circular Buffer Organisation
 
 Each channel maintains a circular novelty buffer of length `windowFrames`. The write pointer
 `writePos` advances modulo `windowFrames` on each hop.
@@ -245,8 +257,8 @@ where:
 - The denominator normalises by the number of valid (non-boundary) sample pairs
 
 Normalisation by σ₁σ₂ confines NCC(τ) to [-1, 1] and makes the result independent of the
-absolute energy level of the programme material. This is important because the two channels may
-have different recording gains.
+absolute energy level of the programme material. This is reinforced by the log-energy novelty
+function (§3.2), which handles gain mismatches before the NCC stage.
 
 The search range depends on mode:
 
@@ -263,44 +275,64 @@ The best lag is:
 Implementation in `estimateAudioFallbackOffset()`:
 
 ```cpp
-// Linearise circular buffers first
-for (int i = 0; i < N; ++i)
-{
-    int src = (audFallback.writePos + i) % N;
-    audFallback.linBuf1[i] = audFallback.novelty1[src];
-    audFallback.linBuf2[i] = audFallback.novelty2[src];
-}
+// Means and standard deviations over nccN frames
+float m1 = 0.0f, m2 = 0.0f;
+for (int i = 0; i < nccN; ++i) { m1 += linBuf1[i]; m2 += linBuf2[i]; }
+m1 /= nccN;  m2 /= nccN;
 
-// Means and standard deviations
-float m1 = 0, m2 = 0;
-for (int i = 0; i < N; ++i) { m1 += linBuf1[i]; m2 += linBuf2[i]; }
-m1 /= N;  m2 /= N;
+float s1 = 0.0f, s2 = 0.0f;
+for (int i = 0; i < nccN; ++i) { /* accumulate variance */ }
+s1 = sqrt(s1/nccN);  s2 = sqrt(s2/nccN);
 
-float s1 = 0, s2 = 0;
-for (int i = 0; i < N; ++i)
-{
-    s1 += (linBuf1[i]-m1)*(linBuf1[i]-m1);
-    s2 += (linBuf2[i]-m2)*(linBuf2[i]-m2);
-}
-s1 = sqrt(s1/N);  s2 = sqrt(s2/N);
+if (s1 < 1e-6f || s2 < 1e-6f) { valid = false; stableCount = 0; return; }
 
-// NCC search
-for (int lag = -L; lag <= L; ++lag)
+// NCC search - cached to avoid recomputation in runner-up scan
+std::array<double, 2*lagRange+1> corrVals{};
+for (int lag = -searchHalf; lag <= searchHalf; ++lag)
 {
-    double sum = 0;  int cnt = 0;
-    for (int i = 0; i < N; ++i)
+    double sum = 0.0;  int cnt = 0;
+    for (int i = 0; i < nccN; ++i)
     {
         int j = i + lag;
-        if (j >= 0 && j < N)
-        { sum += (linBuf1[i]-m1) * (linBuf2[j]-m2);  ++cnt; }
+        if (j >= 0 && j < nccN)
+        { sum += (linBuf1[i]-m1) * (double)(linBuf2[j]-m2); ++cnt; }
     }
-    double corr = cnt > 0 ? sum / (cnt * s1 * s2) : 0.0;
-    // track bestCorr and secondBest ...
+    corrVals[lag + searchHalf] = cnt > 0 ? sum / (cnt * s1 * s2) : 0.0;
 }
 ```
 
 If σ₁ < 1e-6 or σ₂ < 1e-6 (one channel has effectively constant novelty - no detectable
 events), the estimator exits without updating: `valid = false`, `stableCount = 0`.
+
+**Distance-gated runner-up:** The second-best correlation value is found only at lags ≥ 5 hops
+from the best lag, preventing adjacent samples on the same correlation peak from being mistaken
+for a competing peak. This is important for prominence calculation:
+
+```cpp
+static constexpr int MIN_PEAK_DIST = 5;
+double secondBest = -2.0;
+for (int lag = -searchHalf; lag <= searchHalf; ++lag)
+{
+    if (std::abs(lag - bestRelLag) < MIN_PEAK_DIST) continue;
+    if (corrVals[lag + searchHalf] > secondBest)
+        secondBest = corrVals[lag + searchHalf];
+}
+```
+
+**Sub-hop parabolic interpolation:** After finding the integer best lag, a parabola is fitted
+through the three points `{NCC(τ*-1), NCC(τ*), NCC(τ*+1)}` to estimate a fractional sub-hop
+offset. This sharpens lag accuracy from ±10 ms to roughly ±2 ms at no additional NCC cost:
+
+```cpp
+// Only applied when peak is not at the search boundary
+double y0 = corrVals[bestRelLag - 1 + searchHalf];
+double y1 = bestCorr;
+double y2 = corrVals[bestRelLag + 1 + searchHalf];
+double denom = y2 - 2.0 * y1 + y0;
+if (std::abs(denom) > 1e-9)
+    subHopOffset = std::max(-0.5, std::min(0.5, -0.5 * (y2 - y0) / denom));
+// absoluteLagSub = bestRelLag + subHopOffset  (used in ms conversion)
+```
 
 ### 4.3 Computational Cost
 
@@ -385,12 +417,24 @@ A counter `stableCount` increments on agreement and resets to 0 on disagreement:
 ```cpp
 if (stable) ++stableCount;
 else        stableCount = 0;
-
-stability = min(1.0, stableCount / 3.0)
 ```
 
-`stability` reaches 1.0 after 3 consecutive consistent estimates (600 ms), and drops
-immediately back to 0 on any instability event.
+The stability divisor and required threshold depend on the NCC mode:
+
+| Mode | `stabDivisor` | `stabThresh` | Time to `valid` |
+|------|---------------|--------------|-----------------|
+| Anchored | 2.0 | 2 | 2 × 200 ms = 400 ms |
+| Wide | 3.0 | 3 | 3 × 200 ms = 600 ms |
+
+```cpp
+const double stabDivisor = anchorUsable ? 2.0 : 3.0;
+const int    stabThresh  = anchorUsable ? 2   : 3;
+stability = std::min(1.0, stableCount / stabDivisor);
+```
+
+Anchored mode uses a relaxed threshold (2 vs 3) because the narrow ±300 ms search window
+dramatically reduces the probability of a false peak: the estimator is constrained to a
+neighbourhood where the true peak is known to sit.
 
 **Rationale:** a single strong NCC peak could be a statistical artefact in a brief burst of
 correlated noise. Requiring consistent agreement across multiple 200 ms windows ensures the
@@ -567,6 +611,44 @@ lagHalf = anchorUsable ? NARROW_HALF  : lagRange
 When the anchor is age-ok but the history buffer isn't deep enough yet (e.g., right after
 startup), the estimator returns the anchor value directly with `confAud = 0.8` rather than
 running a potentially bogus wide NCC.
+
+### Anchor-Coast During Ring Refill
+
+`purgeNoveltyRing()` is called on the LTC→FAIL edge (see §10.1). This resets `framesFilled`
+to 0, which would normally block the estimator for up to 20 seconds (the full ring refill time
+at `MASTER_NOV_REF_SIZE = 2000` hops). During this window the anchor and α-β tracker still
+hold the true offset — blocking the estimator would cause `fusion.source = None` for the whole
+refill period.
+
+The anchor-coast path handles this: if `anchorAgeOk` is true but `framesFilled < windowFrames`,
+the estimator immediately returns `deltaAudMs = anchorMs, confAud = 0.8, valid = true`. This
+lets the fuser carry the pre-fade offset through the refill window, switching to audio source as
+soon as the ring fills and a proper NCC can run.
+
+```
+// Entry point of estimateAudioFallbackOffset():
+if (anchorAgeOk && framesFilled < windowFrames)
+{
+    deltaAudMs = anchorMs;  confAud = 0.8;  valid = true;
+    return;                 // coast on LTC-captured anchor during ring refill
+}
+```
+
+### Wide-Mode Guard for Out-of-Range Anchors
+
+If the anchor has aged out but `abs(anchorHops) > lagRange`, any peak found in the wide NCC
+search (±lagRange = ±200 hops = ±2 s) is guaranteed to be spurious — the true offset is
+beyond the search range. In this case the estimator suppresses NCC, sets `valid = false`, and
+lets the α-β tracker coast on its last velocity rather than seeding it to a wildly wrong value:
+
+```cpp
+if (!anchorUsable && hasAnchor && std::abs(anchorHops) > lagRange)
+{
+    valid       = false;
+    stableCount = 0;
+    return;
+}
+```
 
 ---
 

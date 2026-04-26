@@ -369,14 +369,18 @@ It is set if **either** input channel reaches `FAIL` state, **or** the cross-cha
 
 ## 6. Persistent Counters
 
-Two counters in `tc_data` are **not** reset by `computeAndResetWindow()`. They are reset by `clear()` only when the delay line is rebuilt (sync jump detected), and survive across window boundaries otherwise.
+Two counters in `tc_data` are **not** reset by `computeAndResetWindow()`. They survive across window boundaries and are reset by `clear()` only.
 
 | Field | Incremented when | Reset when |
 |---|---|---|
 | `decoder_reset_count` | `clear()` is called | Never (accumulates for session lifetime) |
-| `rejected_frames_count` | `calc_delay()` rejects a frame (|Δt| > 10 000 ms) | Never |
+| `rejected_frames_count` | BCD-range check in `handleTimecode()` rejects an impossible SMPTE value (hrs>23, mnts>59, scnds>59, frms≥fps) **or** the temporal-coherence gate rejects a frame outside the ±1..+3 step window | Never |
 
-These are useful for diagnosing intermittent long-gap events that would otherwise not appear in the windowed Q_LTC score (since the rejection happens after decode, not during it).
+**Note on `rejected_frames_count`:** In the current implementation, rejections are performed
+inside `handleTimecode()` itself (BCD validation and coherence gate, see §9.1 below), not in
+the legacy `calc_delay()` function. `calc_delay()` still contains a sanity cap for the
+1-hour magnitude limit but is no longer called in the main master-slave processing path; the
+sample-accurate SM-based d_ms computation in `processBlock()` supersedes it.
 
 ---
 
@@ -458,7 +462,55 @@ All fields are in-class initialized (C++11 style). `const` fields are per-instan
 
 ---
 
-## 9. Instrumentation Points in `handleTimecode()`
+## 9. Temporal-Coherence Gate
+
+The quality scoring layer is purely observational (it accumulates metrics but does not filter
+decoded frames). However, a separate **temporal-coherence gate** in `handleTimecode()` actively
+rejects frames that are syntactically valid (sync word + BCD in range) but temporally incoherent
+— i.e. frames that decode to an impossible timecode progression relative to the previous frame.
+This guards against speech transients that happen to satisfy both the sync-word match and the
+BCD range checks but encode nonsense timecodes.
+
+### BCD Range Validation
+
+Before accepting any decoded frame, `handleTimecode()` checks:
+
+```
+hrs ≤ 23  AND  mnts ≤ 59  AND  scnds ≤ 59  AND  frms < fps
+```
+
+Frames outside this range increment `rejected_frames_count` and reset `syncpos` to -1. The
+decoded digit fields (`hrs`, `mnts`, `scnds`, `frms`) are rolled back to the last accepted
+values so garbage digits cannot reach the `d_ms` computation in `processBlock()`.
+
+### Lock / Unlock State Machine
+
+```
+LOCK_N  = 10   // consecutive valid-step frames needed to enter locked state
+UNLOCK_M = 20  // consecutive rejected frames needed to drop lock
+```
+
+| State | Transition in | Transition out |
+|-------|--------------|----------------|
+| Unlocked | Initial / after UNLOCK_M rejects | After LOCK_N consecutive +1..+3 forward steps |
+| Locked | (see above) | After UNLOCK_M consecutive frames outside [-1..+3] step window |
+
+While **locked**, the decoder requires each new BCD-valid frame's timecode to be within
+`[-1.5, +3.5]` frame-durations of `last_accepted_tc_ms`. Frames outside this window are
+rejected (they are likely speech transients). The tolerance of −1.5 frames accommodates
+one-frame-backward jitter; +3.5 frames allows up to 3 dropped frames without losing lock.
+
+While **unlocked** (re-acquiring after a long dropout), the decoder is permissive — it accepts
+any BCD-valid frame and counts consecutive +1..+3 forward steps toward re-lock. This allows
+fast re-acquisition after genuine LTC gaps without the strict rejection of the locked state.
+
+The `locked` field in `tc_data` (boolean) is also written to `MasterSlot.locked` in shared
+memory so that the slave can gate its `d_ms` update: both decoders must be locked before a
+new offset is committed (see `bothLocked` in master-slave-architecture.md §7).
+
+---
+
+## 10. Instrumentation Points in `handleTimecode()`
 
 Four instrumentation blocks were inserted into the existing function. No existing logic was modified.
 
@@ -526,7 +578,7 @@ if (data.w_sample_count >= data.W_SIZE)
 
 ---
 
-## 10. Diagnostic Update Cycle in `processBlock()`
+## 11. Diagnostic Update Cycle in `processBlock()`
 
 The diagnostic copy and Δt analysis run every 4410 samples (≈ 0.1 s at 44100 Hz), controlled by `dt_sample_counter`. This rate is low enough not to impact audio-thread performance and high enough to give the GUI a responsive update at its 1 ms timer interval.
 
@@ -540,7 +592,7 @@ Inside each diagnostic update:
 
 ---
 
-## 11. GUI Diagnostics Panel
+## 12. GUI Diagnostics Panel
 
 The plugin window was expanded from 400 × 300 px to **400 × 380 px**. A horizontal separator line is drawn in `paint()` at y = 302. Four new `juce::Label` components are added below the separator.
 
@@ -582,7 +634,7 @@ Labels are updated in `timerCallback()` at 1 ms intervals (existing timer). `std
 
 ---
 
-## 12. Test Track Generator - `gen_test_tracks.py`
+## 13. Test Track Generator - `gen_test_tracks.py`
 
 ### 12.1 Encoding Method
 
@@ -675,7 +727,7 @@ The following table gives expected `Q_LTC` ranges, state, and GUI indicators. Va
 
 ---
 
-## 13. Design Decisions and Limitations
+## 14. Design Decisions and Limitations
 
 **No channel_agreement sub-metric in Q_LTC:** channel agreement is computed at the processor level from `d_ms` history, not folded into per-channel `Q_LTC`. This is intentional: a single channel can score VALID while cross-channel Δt is noisy, and the two failure modes should be reported separately.
 
