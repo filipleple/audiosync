@@ -1,11 +1,5 @@
 # Engineering Note - LTC Quality Scoring Layer
 
-**Added to:** "AudioSync" JUCE VST Plugin
-**Base version:** 1.4
-**Scope:** diagnostic instrumentation, `Q_LTC` composite score, `fallback_requested` signal, GUI diagnostics panel, synthetic test track generator
-
----
-
 ## Table of Contents
 
 1. [Motivation](#1-motivation)

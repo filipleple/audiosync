@@ -1,15 +1,5 @@
 # Audio Fallback Synchronisation Layer - Engineering Documentation
 
-**Applies to:** `PluginProcessor.h/cpp`
-**Depends on:** `docs.md` (base LTC decoder and delay engine), `quality_scoring.md` (Q_LTC scoring), `master-slave-architecture.md` (IPC protocol)
-
-This document covers the audio-domain lag estimator, the fusion policy that arbitrates between
-LTC and the audio estimator, and the delay engine integration that allows the fusion output to
-steer compensation. It does not re-explain SMPTE LTC, the BMC decoder, or the Q_LTC windowed
-quality metrics - those are in the documents above.
-
----
-
 ## Table of Contents
 
 1. [Motivation and Scope](#1-motivation-and-scope)

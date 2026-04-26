@@ -1,14 +1,5 @@
 # Master-Slave Multi-Track Sync Architecture
 
-**Supersedes:** the stereo two-channel PoC described in `docs.md`.  
-**Depends on:** `quality_scoring.md` (Q_LTC, ltc_state), `fallback_docs.md` (novelty extraction, NCC, fusion policy).
-
-The PoC processed two channels of a single stereo track. This document defines the production
-architecture, which synchronises up to 8 independent audio tracks to a common reference using a
-master plugin (on the reference track) and one slave plugin per track to be delayed.
-
----
-
 ## Table of Contents
 
 1. [Goals and Non-Goals](#1-goals-and-non-goals)
