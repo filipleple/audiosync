@@ -40,20 +40,23 @@ git clone https://git.pg.edu.pl/p1334942/automatic-synchronization-of-sound-with
 
 ```bash
 mkdir -p build && cd build
-cmake ..
-make
+cmake .. -DCMAKE_BUILD_TYPE=Release -DJUCE_PATH=../../juce-8.0.10-linux/JUCE
+cmake --build . -j$(nproc)
 ```
 
 Output: `build/AudioSyncPlugin_artefacts/Release/VST3/`
 
 ### Build (Windows)
 
-Open `AudioSync.jucer` in **Projucer**, export to Visual Studio 2022, then build from
-the IDE or:
+Open the repo directory in Power Shell and run:
 
-```bash
-msbuild "Builds/VisualStudio2022/AudioSync.sln"
+```psh
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64 -DJUCE_PATH=C:\Users\vboxuser\Workspace\JUCE
+cmake --build build --config Release
 ```
+
+Replacing `Visual Studio 18 2026` with your appropriate version, and
+`-DJUCE_PATH` pointing to the actual path to JUCE on your machine.
 
 ## Usage
 
